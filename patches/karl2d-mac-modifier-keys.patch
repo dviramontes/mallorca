@@ -1,0 +1,34 @@
+diff --git a/platform_mac.odin b/platform_mac.odin
+index 21f1050..b9ccb40 100644
+--- a/platform_mac.odin
++++ b/platform_mac.odin
+@@ -311,6 +311,29 @@ mac_get_events :: proc(events: ^[dynamic]Event) {
+ 				append(&s.events, Event_Key_Went_Up{key = key})
+ 			}
+ 
++		case .FlagsChanged:
++			// Modifier keys (Shift, Control, Option, Command, Caps Lock) do
++			// not send KeyDown/KeyUp on macOS; they arrive as FlagsChanged.
++			// The event's keyCode says which key changed and the modifier
++			// flags say whether it is now down or up.
++			key := key_from_macos_keycode(event->keyCode())
++			if key != .None {
++				mods := event->modifierFlags()
++				is_down := false
++				#partial switch key {
++				case .Left_Shift, .Right_Shift:     is_down = .Shift in mods
++				case .Left_Control, .Right_Control: is_down = .Control in mods
++				case .Left_Alt, .Right_Alt:         is_down = .Option in mods
++				case .Left_Super, .Right_Super:     is_down = .Command in mods
++				case .Caps_Lock:                    is_down = .CapsLock in mods
++				}
++				if is_down {
++					append(&s.events, Event_Key_Went_Down{key = key})
++				} else {
++					append(&s.events, Event_Key_Went_Up{key = key})
++				}
++			}
++
+ 		case .LeftMouseDown:
+ 			s.left_mouse_held = true
+ 			append(&s.events, Event_Mouse_Button_Went_Down{button = .Left})
