@@ -1,6 +1,6 @@
 // mallorca — native Odin port of Orca.
-// M3: grid display + editing + running simulation. Events are produced
-// each tick but not delivered anywhere yet (MIDI is M5).
+// Grid display + editing + running simulation, with the VM's MIDI events
+// delivered via CoreMIDI (see midi.odin). OSC and UDP remain deferred.
 package main
 
 import "core:fmt"
@@ -30,6 +30,10 @@ ADVANCE_EM :: 0.6
 LINE_EM :: 1.15
 
 RULER_SPACING :: 8
+
+// The status line renders at this fraction of the grid glyph size — it's
+// heads-up/debug text, secondary to the grid.
+STATUS_SCALE :: 0.6
 
 // Orca-ish theme.
 BG :: k2.Color{0x17, 0x17, 0x17, 0xff}
@@ -68,6 +72,7 @@ App :: struct {
 	status_timer: f32,
 	repeat:       [len(REPEAT_KEYS)]f32,
 	insert_mode:  bool, // typing advances the cursor when true
+	audition:     bool, // Enter held: sounding the middle-C audition tone
 
 	// Rectangular selection: anchored at (sel_x, sel_y), extended to the
 	// cursor. Inactive selections are treated as the single cursor cell.
@@ -82,12 +87,24 @@ App :: struct {
 
 	// Simulation state.
 	marks:        []orca.Mark,
-	events:       [dynamic]orca.Event, // produced each tick; unused until M5
+	events:       [dynamic]orca.Event, // produced each tick, dispatched to MIDI
 	tick:         uint,
 	bpm:          int,
 	playing:      bool,
 	accum:        f32, // elapsed seconds not yet consumed by ticks
 	dirty:        bool, // grid edited while paused; marks need a preview
+
+	// MIDI output (M5).
+	midi:         Midi,
+	sus:          [dynamic]Sus_Note, // notes awaiting their note-off
+}
+
+// A note-on awaiting its note-off, counted down in VM frames (the note's
+// duration). Tick-driven, matching orca-c, so tempo changes stay in sync.
+Sus_Note :: struct {
+	channel: u8,
+	note:    u8, // final MIDI note number, 0-127
+	frames:  int,
 }
 
 // Four VM frames per beat — orca-c's timing rule. The single source of
@@ -98,8 +115,19 @@ frame_seconds :: proc(bpm: int) -> f32 {
 
 main :: proc() {
 	app: App
-	if len(os.args) > 1 && os.args[1] != "" {
-		app.file_name = os.args[1]
+
+	// Args: an optional .orca file path and an optional --debug flag, in any
+	// order. The first non-flag argument is the file.
+	debug := false
+	for arg in os.args[1:] {
+		if arg == "--debug" {
+			debug = true
+		} else if arg != "" && app.file_name == "" {
+			app.file_name = arg
+		}
+	}
+
+	if app.file_name != "" {
 		data, read_err := os.read_entire_file_from_path(app.file_name, context.allocator)
 		if read_err != nil {
 			fmt.eprintfln("mallorca: cannot read %q: %v", app.file_name, read_err)
@@ -118,10 +146,13 @@ main :: proc() {
 	app.marks = orca.make_marks(app.grid)
 	app.bpm = DEFAULT_BPM
 	app.dirty = true // preview marks for the freshly loaded grid
+	app.midi = midi_init(debug)
 	defer orca.destroy_grid(&app.grid)
 	defer delete(app.marks)
 	defer delete(app.events)
 	defer delete(app.clip_cells)
+	defer delete(app.sus)
+	defer midi_shutdown(&app.midi)
 	defer if app.status_msg != "" {
 		delete(app.status_msg)
 	}
@@ -162,6 +193,7 @@ main :: proc() {
 
 		pool->drain()
 		if quit {
+			flush_notes(&app) // silence any sustained notes before exit
 			break
 		}
 	}
@@ -234,6 +266,19 @@ GLYPH_KEYS :: [?]Glyph_Key{
 }
 
 handle_input :: proc(app: ^App) {
+	// Audition tone: hold Enter to sound middle C (MIDI note 60) on channel
+	// 0, whether playing or not — a quick way to check the MIDI output and
+	// synth routing. The play border lights while it sounds.
+	AUDITION_NOTE :: u8(60)
+	held := k2.key_is_held(.Enter)
+	if held && !app.audition {
+		midi_note_on(&app.midi, 0, AUDITION_NOTE, 100)
+		app.audition = true
+	} else if !held && app.audition {
+		midi_note_off(&app.midi, 0, AUDITION_NOTE)
+		app.audition = false
+	}
+
 	// Ctrl/Cmd shortcuts own the whole key event: save, step, resize,
 	// clipboard, select-all. Handled first so those keys never leak into
 	// movement or glyph entry.
@@ -290,6 +335,9 @@ handle_input :: proc(app: ^App) {
 	if k2.key_went_down(.Space) {
 		app.playing = !app.playing
 		app.accum = 0
+		if !app.playing {
+			flush_notes(app) // don't leave notes hanging when stopping
+		}
 		set_status(app, fmt.aprintf("%s", "playing" if app.playing else "paused"))
 	}
 
@@ -323,7 +371,13 @@ handle_shortcuts :: proc(app: ^App) {
 	if k2.key_went_down(.Up) {resize_grid_by(app, 0, -1)}
 	if k2.key_went_down(.Down) {resize_grid_by(app, 0, +1)}
 	if k2.key_went_down(.S) {save(app)}
-	if k2.key_went_down(.F) {step_tick(app)} // single-step one frame (orca-c's Ctrl+F)
+	if k2.key_went_down(.F) {
+		// Single-step one frame (orca-c's Ctrl+F). Release the previous
+		// step's notes first so a manually stepped note never hangs past
+		// the next step regardless of its programmed duration.
+		flush_notes(app)
+		step_tick(app)
+	}
 	if k2.key_went_down(.C) {copy_selection(app)}
 	if k2.key_went_down(.X) {cut_selection(app)}
 	if k2.key_went_down(.V) {paste_clip(app)}
@@ -454,8 +508,68 @@ MAX_TICKS_PER_FRAME :: 8
 
 step_tick :: proc(app: ^App) {
 	orca.run_tick(app.grid, app.marks, app.tick, 0, &app.events)
+	advance_notes(app) // expire notes triggered on earlier ticks first
+	dispatch_events(app) // then emit this tick's events (and schedule new notes)
 	app.tick += 1
 	app.dirty = false
+}
+
+// Count down every sustained note by one frame; send note-off for any that
+// reach the end of their duration.
+advance_notes :: proc(app: ^App) {
+	i := 0
+	for i < len(app.sus) {
+		app.sus[i].frames -= 1
+		if app.sus[i].frames <= 0 {
+			midi_note_off(&app.midi, app.sus[i].channel, app.sus[i].note)
+			unordered_remove(&app.sus, i)
+		} else {
+			i += 1
+		}
+	}
+}
+
+// Turn this tick's VM events into MIDI. OSC ('=') and UDP (';') are network
+// transports and remain deferred; the VM still produces them.
+dispatch_events :: proc(app: ^App) {
+	for ev in app.events {
+		switch e in ev {
+		case orca.Midi_Note_Event:
+			note := u8(clamp(int(e.octave)*12 + int(e.note), 0, 127))
+			if e.mono {
+				stop_channel(app, e.channel) // '%' steals its channel
+			}
+			midi_note_on(&app.midi, e.channel, note, e.velocity)
+			append(&app.sus, Sus_Note{channel = e.channel, note = note, frames = max(int(e.duration), 1)})
+		case orca.Midi_CC_Event:
+			midi_cc(&app.midi, e.channel, e.control, e.value)
+		case orca.Midi_PB_Event:
+			midi_pitch_bend(&app.midi, e.channel, e.lsb, e.msb)
+		case orca.Osc_Ints_Event: // deferred
+		case orca.Udp_String_Event: // deferred
+		}
+	}
+}
+
+// Send note-off for and drop every sustained note on `channel` (monophony).
+stop_channel :: proc(app: ^App, channel: u8) {
+	i := 0
+	for i < len(app.sus) {
+		if app.sus[i].channel == channel {
+			midi_note_off(&app.midi, app.sus[i].channel, app.sus[i].note)
+			unordered_remove(&app.sus, i)
+		} else {
+			i += 1
+		}
+	}
+}
+
+// Silence and forget all sustained notes (pause, quit, or device change).
+flush_notes :: proc(app: ^App) {
+	for n in app.sus {
+		midi_note_off(&app.midi, n.channel, n.note)
+	}
+	clear(&app.sus)
 }
 
 update_sim :: proc(app: ^App) {
@@ -532,7 +646,8 @@ compute_layout :: proc(grid: orca.Grid) -> Layout {
 // Solid frame just inside the window edges signalling play state:
 // green while playing, nothing while paused.
 draw_border :: proc(app: ^App) {
-	if !app.playing {
+	// Green frame while playing, or while the Enter audition tone sounds.
+	if !app.playing && !app.audition {
 		return
 	}
 	rect := k2.Rect{
@@ -621,6 +736,9 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		if app.insert_mode {
 			mode = fmt.tprintf("%s  ins", mode)
 		}
+		if app.midi.ok {
+			mode = fmt.tprintf("%s  midi%s", mode, "+dev" if app.midi.has_dest else "")
+		}
 		text = fmt.tprintf(
 			"%s   %dx%d   %d,%d   %df   %dbpm%s",
 			name,
@@ -633,6 +751,9 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 			mode,
 		)
 	}
-	y := f32(k2.get_screen_height()) - layout.font_size - MARGIN
-	k2.draw_text(text, {MARGIN, y}, layout.font_size, STATUS, font)
+	// The status line is heads-up/debug info, so draw it smaller than the
+	// grid glyphs (60%) to keep it fitting within the window width.
+	size := layout.font_size * STATUS_SCALE
+	y := f32(k2.get_screen_height()) - size - MARGIN
+	k2.draw_text(text, {MARGIN, y}, size, STATUS, font)
 }

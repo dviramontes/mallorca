@@ -8,15 +8,17 @@ independent from rendering and file I/O.
 
 > [!NOTE]
 > Mallorca is a work in progress and currently runs on macOS. The simulation
-> produces Orca's MIDI, OSC, and UDP events, but the application does not yet
-> deliver them to external devices or services, so it is currently silent.
+> sends its MIDI events out over CoreMIDI (note, control change, and pitch
+> bend); OSC and UDP events are still produced but not yet delivered.
 
 ## Features
 
 - Load, edit, and save rectangular `.orca` text grids
 - Run or single-step the Orca simulation at four frames per beat
 - Orca-c-compatible operators, per-cell marks, and event generation
+- Live MIDI output via CoreMIDI, with tick-accurate note durations
 - Visual highlighting for inputs, outputs, locked cells, and haste inputs
+- Selection with copy/cut/paste, interactive grid resize, and BPM control
 - Headless core package with tests independent of the graphical application
 - Bundled monospace font and example patches
 
@@ -65,6 +67,7 @@ When a blank grid is saved for the first time, Mallorca writes it to
 | `Tab` | Toggle insert mode (typing advances the cursor) |
 | `<` / `>` | Decrease / increase BPM |
 | `Space` | Play or pause |
+| `Enter` (hold) | Audition a middle-C MIDI note (checks output/synth routing) |
 | `Cmd/Ctrl` + arrow keys | Grow or shrink the grid |
 | `Cmd/Ctrl` + `A` | Select the whole grid |
 | `Cmd/Ctrl` + `C` / `X` / `V` | Copy / cut / paste the selection |
@@ -78,6 +81,24 @@ cursor cell. Paste drops its top-left corner at the cursor, clipping anything
 past the grid edge. The status line shows the file, grid dimensions, cursor
 position, frame, BPM, playback state, and an `ins` flag while insert mode is
 on. A green window border indicates that the simulation is playing.
+
+## MIDI output
+
+On launch Mallorca publishes a virtual CoreMIDI source named **mallorca** and,
+if any hardware MIDI destination is present, also sends to the first one.
+Subscribe to the virtual source from a DAW or software synth (for a purely
+software setup, route it through an IAC bus in Audio MIDI Setup) to hear a
+running patch. The status line shows `midi` once output is live, and `midi+dev`
+when a hardware destination was also found.
+
+Note durations are counted in VM frames, so note-offs stay aligned with the
+tempo; the `%` operator is monophonic and stops any existing note on its
+channel. Stopping playback or quitting flushes all sustained notes.
+`examples/_midi.orca` is a good patch to try first, and holding `Enter` sends a
+middle C so you can confirm your synth is wired up before running a patch.
+
+Run with `--debug` (`just run examples/_midi.orca --debug`) to log every MIDI
+message to stderr.
 
 ## Development
 

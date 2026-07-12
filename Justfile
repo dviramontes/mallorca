@@ -23,10 +23,10 @@ check:
     odin check src {{defines}}
     odin check src/core -no-entry-point
 
-# debug build & run; pass an .orca file to load it
-run file="":
+# debug build & run; pass an .orca file to load, and extra flags like --debug
+run file="" *flags="":
     mkdir -p bin
-    odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}"
+    odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" {{flags}}
 
 # debug build
 build:

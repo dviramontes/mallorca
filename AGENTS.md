@@ -105,5 +105,7 @@ not derive ticks from the wall clock.
   written into the field.
 
 See [PLAN.md](PLAN.md) for the full architecture rationale, the orca-c reference
-diagram, and the milestone roadmap (M1–M5). M3 (simulation) is the current
-state; M4 (livecoding polish) and M5 (CoreMIDI out) are not yet implemented.
+diagram, and the milestone roadmap (M1–M5). All milestones are implemented: the
+VM's MIDI events are delivered over CoreMIDI (`src/midi.odin`, macOS-only), with
+the tick-driven note scheduler in `main.odin`. OSC (`=`) and UDP (`;`) events are
+still produced by the VM but not yet delivered.
