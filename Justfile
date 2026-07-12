@@ -38,6 +38,35 @@ release:
     mkdir -p bin
     odin build src -o:speed {{defines}} -out:bin/mallorca
 
+# build an optimized .app bundle with the island icon (macOS Dock/Finder icon)
+bundle:
+    mkdir -p bin
+    odin build src -o:speed {{defines}} -out:bin/mallorca
+    rm -rf bin/Mallorca.app
+    mkdir -p bin/Mallorca.app/Contents/MacOS bin/Mallorca.app/Contents/Resources
+    cp bin/mallorca bin/Mallorca.app/Contents/MacOS/mallorca
+    cp assets/mallorca.icns bin/Mallorca.app/Contents/Resources/mallorca.icns
+    printf '%s\n' \
+      '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+      '<plist version="1.0">' \
+      '<dict>' \
+      '    <key>CFBundleName</key><string>Mallorca</string>' \
+      '    <key>CFBundleDisplayName</key><string>Mallorca</string>' \
+      '    <key>CFBundleExecutable</key><string>mallorca</string>' \
+      '    <key>CFBundleIconFile</key><string>mallorca</string>' \
+      '    <key>CFBundleIdentifier</key><string>com.dviramontes.mallorca</string>' \
+      '    <key>CFBundleShortVersionString</key><string>0.5.0</string>' \
+      '    <key>CFBundleVersion</key><string>0.5.0</string>' \
+      '    <key>CFBundlePackageType</key><string>APPL</string>' \
+      '    <key>LSMinimumSystemVersion</key><string>11.0</string>' \
+      '    <key>NSHighResolutionCapable</key><true/>' \
+      '</dict>' \
+      '</plist>' \
+      > bin/Mallorca.app/Contents/Info.plist
+    plutil -lint bin/Mallorca.app/Contents/Info.plist
+    @echo "built bin/Mallorca.app"
+
 # run core simulation tests
 test:
     odin test src/core
