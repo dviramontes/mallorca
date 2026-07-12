@@ -66,3 +66,24 @@ test_grid_bounds :: proc(t: ^testing.T) {
 	grid_set(grid, 5, 5, 'X') // out of bounds: no-op, no crash
 	testing.expect_value(t, grid_get(grid, 5, 5), EMPTY_GLYPH)
 }
+
+@(test)
+test_resize_grid_grow :: proc(t: ^testing.T) {
+	grid, _ := parse_field(transmute([]u8)string("AB\nCD\n"), context.temp_allocator)
+	bigger := resize_grid(grid, 3, 3, context.temp_allocator)
+	testing.expect_value(t, bigger.width, 3)
+	testing.expect_value(t, bigger.height, 3)
+	testing.expect_value(t, grid_get(bigger, 0, 0), u8('A'))
+	testing.expect_value(t, grid_get(bigger, 1, 1), u8('D'))
+	testing.expect_value(t, grid_get(bigger, 2, 2), EMPTY_GLYPH) // new cell
+}
+
+@(test)
+test_resize_grid_shrink :: proc(t: ^testing.T) {
+	grid, _ := parse_field(transmute([]u8)string("ABC\nDEF\nGHI\n"), context.temp_allocator)
+	smaller := resize_grid(grid, 2, 2, context.temp_allocator)
+	testing.expect_value(t, smaller.width, 2)
+	testing.expect_value(t, smaller.height, 2)
+	testing.expect_value(t, grid_get(smaller, 0, 0), u8('A'))
+	testing.expect_value(t, grid_get(smaller, 1, 1), u8('E'))
+}

@@ -48,6 +48,7 @@ HASTE :: k2.Color{0x3f, 0x9d, 0x9d, 0xff} // darker cyan: hasted operands
 LOCKED :: k2.Color{0x70, 0x70, 0x70, 0xff} // comment/data cells
 
 PLAY_BORDER :: k2.Color{0x5d, 0xd0, 0x5d, 0xff} // green frame while playing
+SELECT :: k2.Color{0x2c, 0x3e, 0x63, 0xff} // muted blue behind selected cells
 
 DEFAULT_W :: 57
 DEFAULT_H :: 25
@@ -55,6 +56,8 @@ DEFAULT_H :: 25
 DEFAULT_FILE_NAME :: "untitled.orca"
 
 DEFAULT_BPM :: 120
+BPM_MIN :: 10
+BPM_MAX :: 300
 
 App :: struct {
 	grid:         orca.Grid,
@@ -64,6 +67,18 @@ App :: struct {
 	status_msg:   string, // transient message shown in the status bar
 	status_timer: f32,
 	repeat:       [len(REPEAT_KEYS)]f32,
+	insert_mode:  bool, // typing advances the cursor when true
+
+	// Rectangular selection: anchored at (sel_x, sel_y), extended to the
+	// cursor. Inactive selections are treated as the single cursor cell.
+	sel_active:   bool,
+	sel_x:        int,
+	sel_y:        int,
+
+	// Clipboard: a rectangular block of glyphs (heap-owned).
+	clip_cells:   []u8,
+	clip_w:       int,
+	clip_h:       int,
 
 	// Simulation state.
 	marks:        []orca.Mark,
@@ -106,6 +121,7 @@ main :: proc() {
 	defer orca.destroy_grid(&app.grid)
 	defer delete(app.marks)
 	defer delete(app.events)
+	defer delete(app.clip_cells)
 	defer if app.status_msg != "" {
 		delete(app.status_msg)
 	}
@@ -135,6 +151,7 @@ main :: proc() {
 			layout := compute_layout(app.grid)
 			k2.clear(BG)
 			draw_border(&app)
+			draw_selection(&app, layout)
 			draw_grid(app.grid, app.marks, font, layout)
 			draw_cursor(&app, font, layout)
 			draw_status(&app, font, layout)
@@ -217,18 +234,56 @@ GLYPH_KEYS :: [?]Glyph_Key{
 }
 
 handle_input :: proc(app: ^App) {
-	// Cursor movement, with key repeat.
-	if key_repeats(app, 0, .Left) {app.cursor_x -= 1}
-	if key_repeats(app, 1, .Right) {app.cursor_x += 1}
-	if key_repeats(app, 2, .Up) {app.cursor_y -= 1}
-	if key_repeats(app, 3, .Down) {app.cursor_y += 1}
-	app.cursor_x = clamp(app.cursor_x, 0, app.grid.width - 1)
-	app.cursor_y = clamp(app.cursor_y, 0, app.grid.height - 1)
+	// Ctrl/Cmd shortcuts own the whole key event: save, step, resize,
+	// clipboard, select-all. Handled first so those keys never leak into
+	// movement or glyph entry.
+	if ctrl_held() {
+		handle_shortcuts(app)
+		return
+	}
 
-	// Clearing.
-	if key_repeats(app, 4, .Backspace) || k2.key_went_down(.Delete) || k2.key_went_down(.Period) {
-		orca.grid_set(app.grid, app.cursor_x, app.cursor_y, orca.EMPTY_GLYPH)
-		app.dirty = true
+	shift := shift_held()
+
+	// Cursor movement (with key repeat). Shift extends the selection;
+	// an unshifted move collapses it.
+	mdx, mdy := 0, 0
+	if key_repeats(app, 0, .Left) {mdx -= 1}
+	if key_repeats(app, 1, .Right) {mdx += 1}
+	if key_repeats(app, 2, .Up) {mdy -= 1}
+	if key_repeats(app, 3, .Down) {mdy += 1}
+	if mdx != 0 || mdy != 0 {
+		if shift {
+			begin_selection(app)
+		} else {
+			app.sel_active = false
+		}
+		app.cursor_x = clamp(app.cursor_x + mdx, 0, app.grid.width - 1)
+		app.cursor_y = clamp(app.cursor_y + mdy, 0, app.grid.height - 1)
+	}
+
+	// BPM adjust: '<' / '>' (Shift+Comma / Shift+Period).
+	if shift {
+		if k2.key_went_down(.Comma) {adjust_bpm(app, -1)}
+		if k2.key_went_down(.Period) {adjust_bpm(app, +1)}
+	}
+
+	// Insert-mode toggle.
+	if k2.key_went_down(.Tab) {
+		app.insert_mode = !app.insert_mode
+		set_status(app, fmt.aprintf("insert %s", "on" if app.insert_mode else "off"))
+	}
+
+	// Clearing. Backspace deletes the previous cell in insert mode
+	// (typewriter-style); Delete and '.' always clear in place. Shifted
+	// '.' is the BPM key above, not a clear.
+	if key_repeats(app, 4, .Backspace) {
+		if app.insert_mode {
+			app.cursor_x = max(app.cursor_x - 1, 0)
+		}
+		clear_cell(app)
+	}
+	if k2.key_went_down(.Delete) || (k2.key_went_down(.Period) && !shift) {
+		clear_cell(app)
 	}
 
 	// Play/pause.
@@ -238,27 +293,15 @@ handle_input :: proc(app: ^App) {
 		set_status(app, fmt.aprintf("%s", "playing" if app.playing else "paused"))
 	}
 
-	if ctrl_held() {
-		if k2.key_went_down(.S) {
-			save(app)
-		}
-		if k2.key_went_down(.F) {
-			step_tick(app) // single-step one frame (orca-c's Ctrl+F)
-		}
-		return // don't treat shortcut keys as glyph input
-	}
-
 	// Letters: unshifted lowercase (on-bang ops), shifted uppercase
 	// (every-frame ops). Keyboard_Key values match ASCII uppercase.
-	shift := shift_held()
 	for key in k2.Keyboard_Key.A ..= k2.Keyboard_Key.Z {
 		if k2.key_went_down(key) {
 			glyph := u8(key)
 			if !shift {
 				glyph += 'a' - 'A'
 			}
-			orca.grid_set(app.grid, app.cursor_x, app.cursor_y, glyph)
-			app.dirty = true
+			put_glyph(app, glyph)
 		}
 	}
 
@@ -267,11 +310,137 @@ handle_input :: proc(app: ^App) {
 		if k2.key_went_down(gk.key) {
 			glyph := gk.shifted if shift else gk.base
 			if glyph != 0 {
-				orca.grid_set(app.grid, app.cursor_x, app.cursor_y, glyph)
-				app.dirty = true
+				put_glyph(app, glyph)
 			}
 		}
 	}
+}
+
+// Ctrl/Cmd chords. Ctrl+arrows resize the grid; the rest are single keys.
+handle_shortcuts :: proc(app: ^App) {
+	if k2.key_went_down(.Left) {resize_grid_by(app, -1, 0)}
+	if k2.key_went_down(.Right) {resize_grid_by(app, +1, 0)}
+	if k2.key_went_down(.Up) {resize_grid_by(app, 0, -1)}
+	if k2.key_went_down(.Down) {resize_grid_by(app, 0, +1)}
+	if k2.key_went_down(.S) {save(app)}
+	if k2.key_went_down(.F) {step_tick(app)} // single-step one frame (orca-c's Ctrl+F)
+	if k2.key_went_down(.C) {copy_selection(app)}
+	if k2.key_went_down(.X) {cut_selection(app)}
+	if k2.key_went_down(.V) {paste_clip(app)}
+	if k2.key_went_down(.A) {select_all(app)}
+}
+
+// Write a glyph at the cursor, collapsing any selection. In insert mode
+// the cursor then advances east (stopping at the right edge).
+put_glyph :: proc(app: ^App, glyph: u8) {
+	orca.grid_set(app.grid, app.cursor_x, app.cursor_y, glyph)
+	app.sel_active = false
+	app.dirty = true
+	if app.insert_mode {
+		app.cursor_x = min(app.cursor_x + 1, app.grid.width - 1)
+	}
+}
+
+clear_cell :: proc(app: ^App) {
+	orca.grid_set(app.grid, app.cursor_x, app.cursor_y, orca.EMPTY_GLYPH)
+	app.dirty = true
+}
+
+adjust_bpm :: proc(app: ^App, d: int) {
+	app.bpm = clamp(app.bpm + d, BPM_MIN, BPM_MAX)
+	set_status(app, fmt.aprintf("%d bpm", app.bpm))
+}
+
+//-----------//
+// SELECTION //
+//-----------//
+
+// Start a selection anchored at the cursor if one isn't already active.
+begin_selection :: proc(app: ^App) {
+	if !app.sel_active {
+		app.sel_active = true
+		app.sel_x = app.cursor_x
+		app.sel_y = app.cursor_y
+	}
+}
+
+// The selected rectangle in grid coordinates. An inactive selection is the
+// single cursor cell, so copy/cut always have something to act on.
+selection_rect :: proc(app: ^App) -> (x0, y0, x1, y1: int) {
+	if !app.sel_active {
+		return app.cursor_x, app.cursor_y, app.cursor_x, app.cursor_y
+	}
+	return min(app.sel_x, app.cursor_x), min(app.sel_y, app.cursor_y),
+		max(app.sel_x, app.cursor_x), max(app.sel_y, app.cursor_y)
+}
+
+select_all :: proc(app: ^App) {
+	app.sel_active = true
+	app.sel_x, app.sel_y = 0, 0
+	app.cursor_x = app.grid.width - 1
+	app.cursor_y = app.grid.height - 1
+}
+
+copy_selection :: proc(app: ^App) {
+	x0, y0, x1, y1 := selection_rect(app)
+	w, h := x1 - x0 + 1, y1 - y0 + 1
+	delete(app.clip_cells)
+	app.clip_cells = make([]u8, w*h)
+	app.clip_w, app.clip_h = w, h
+	for y in 0 ..< h {
+		for x in 0 ..< w {
+			app.clip_cells[y*w + x] = orca.grid_get(app.grid, x0 + x, y0 + y)
+		}
+	}
+	set_status(app, fmt.aprintf("copied %dx%d", w, h))
+}
+
+cut_selection :: proc(app: ^App) {
+	copy_selection(app)
+	x0, y0, x1, y1 := selection_rect(app)
+	for y in y0 ..= y1 {
+		for x in x0 ..= x1 {
+			orca.grid_set(app.grid, x, y, orca.EMPTY_GLYPH)
+		}
+	}
+	app.sel_active = false
+	app.dirty = true
+	set_status(app, fmt.aprintf("cut %dx%d", app.clip_w, app.clip_h))
+}
+
+// Paste the clipboard block with its top-left at the cursor; cells that
+// fall outside the grid are dropped (grid_set clips).
+paste_clip :: proc(app: ^App) {
+	if app.clip_w == 0 {
+		return
+	}
+	for y in 0 ..< app.clip_h {
+		for x in 0 ..< app.clip_w {
+			orca.grid_set(app.grid, app.cursor_x + x, app.cursor_y + y, app.clip_cells[y*app.clip_w + x])
+		}
+	}
+	app.dirty = true
+	set_status(app, fmt.aprintf("pasted %dx%d", app.clip_w, app.clip_h))
+}
+
+// Reallocate the grid (and mark buffer), preserving the overlapping
+// top-left content and clamping the cursor into the new bounds.
+resize_grid_by :: proc(app: ^App, dw, dh: int) {
+	nw := clamp(app.grid.width + dw, 1, orca.MAX_DIM)
+	nh := clamp(app.grid.height + dh, 1, orca.MAX_DIM)
+	if nw == app.grid.width && nh == app.grid.height {
+		return
+	}
+	ng := orca.resize_grid(app.grid, nw, nh)
+	orca.destroy_grid(&app.grid)
+	app.grid = ng
+	delete(app.marks)
+	app.marks = orca.make_marks(app.grid)
+	app.cursor_x = clamp(app.cursor_x, 0, nw - 1)
+	app.cursor_y = clamp(app.cursor_y, 0, nh - 1)
+	app.sel_active = false
+	app.dirty = true
+	set_status(app, fmt.aprintf("%dx%d", nw, nh))
 }
 
 //------------//
@@ -375,6 +544,21 @@ draw_border :: proc(app: ^App) {
 	k2.draw_rect_outline(rect, BORDER_THICKNESS, PLAY_BORDER)
 }
 
+// Muted fill behind the selected rectangle, drawn under the glyphs.
+draw_selection :: proc(app: ^App, layout: Layout) {
+	if !app.sel_active {
+		return
+	}
+	x0, y0, x1, y1 := selection_rect(app)
+	rect := k2.Rect{
+		MARGIN + f32(x0)*layout.cell_w,
+		MARGIN + f32(y0)*layout.cell_h,
+		f32(x1 - x0 + 1)*layout.cell_w,
+		f32(y1 - y0 + 1)*layout.cell_h,
+	}
+	k2.draw_rect(rect, SELECT)
+}
+
 draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: Layout) {
 	buf: [1]u8
 	for y in 0 ..< grid.height {
@@ -433,8 +617,12 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		text = app.status_msg
 	} else {
 		name := app.file_name if app.file_name != "" else "(unsaved)"
+		mode := "  play" if app.playing else "  stop"
+		if app.insert_mode {
+			mode = fmt.tprintf("%s  ins", mode)
+		}
 		text = fmt.tprintf(
-			"%s   %dx%d   %d,%d   %df   %dbpm   %s",
+			"%s   %dx%d   %d,%d   %df   %dbpm%s",
 			name,
 			app.grid.width,
 			app.grid.height,
@@ -442,7 +630,7 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 			app.cursor_y,
 			app.tick,
 			app.bpm,
-			"play" if app.playing else "stop",
+			mode,
 		)
 	}
 	y := f32(k2.get_screen_height()) - layout.font_size - MARGIN

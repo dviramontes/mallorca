@@ -42,6 +42,19 @@ grid_set :: proc(grid: Grid, x, y: int, glyph: u8) {
 	grid.cells[y*grid.width + x] = glyph
 }
 
+// Return a new grid of (width, height), copying the overlapping top-left
+// region of `src`; cells outside that region are EMPTY_GLYPH. Does not
+// free `src` — the caller owns both grids.
+resize_grid :: proc(src: Grid, width, height: int, allocator := context.allocator) -> Grid {
+	dst := make_grid(width, height, allocator = allocator)
+	for y in 0 ..< min(height, src.height) {
+		for x in 0 ..< min(width, src.width) {
+			dst.cells[y*width + x] = src.cells[y*src.width + x]
+		}
+	}
+	return dst
+}
+
 Parse_Error :: enum {
 	None,
 	No_Rows,

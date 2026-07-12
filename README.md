@@ -59,17 +59,25 @@ When a blank grid is saved for the first time, Mallorca writes it to
 | Input | Action |
 | --- | --- |
 | Arrow keys | Move the cursor |
+| `Shift` + arrow keys | Extend a rectangular selection |
 | Letters, digits, and operator symbols | Write a glyph at the cursor |
 | `Backspace`, `Delete`, or `.` | Clear the current cell |
+| `Tab` | Toggle insert mode (typing advances the cursor) |
+| `<` / `>` | Decrease / increase BPM |
 | `Space` | Play or pause |
+| `Cmd/Ctrl` + arrow keys | Grow or shrink the grid |
+| `Cmd/Ctrl` + `A` | Select the whole grid |
+| `Cmd/Ctrl` + `C` / `X` / `V` | Copy / cut / paste the selection |
 | `Cmd/Ctrl` + `F` | Advance one simulation frame |
 | `Cmd/Ctrl` + `S` | Save the grid |
 | `Cmd/Ctrl` + `Q` | Quit |
 
 Lowercase operators run when banged; hold Shift to enter their uppercase,
-every-frame forms. The status line shows the file, grid dimensions, cursor
-position, frame, BPM, and playback state. A green window border indicates
-that the simulation is playing.
+every-frame forms. With no active selection, copy and cut act on the single
+cursor cell. Paste drops its top-left corner at the cursor, clipping anything
+past the grid edge. The status line shows the file, grid dimensions, cursor
+position, frame, BPM, playback state, and an `ins` flag while insert mode is
+on. A green window border indicates that the simulation is playing.
 
 ## Development
 
