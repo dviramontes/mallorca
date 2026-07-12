@@ -1,8 +1,10 @@
 // mallorca — native Odin port of Orca.
-// M2: grid display + cursor + editing + save. No simulation, no MIDI yet.
+// M3: grid display + editing + running simulation. Events are produced
+// each tick but not delivered anywhere yet (MIDI is M5).
 package main
 
 import "core:fmt"
+import "core:math"
 import "core:os"
 import NS "core:sys/darwin/Foundation" // macOS-only for now; gate with #+build when porting
 import k2 "../karl2d"
@@ -13,7 +15,14 @@ FONT_DATA :: #load("../assets/JetBrainsMono-Regular.ttf")
 // Font size used only to compute the initial window dimensions; after
 // that, the grid scales to fill the window width.
 INITIAL_FONT_SIZE :: 32
-MARGIN :: 16
+
+// Play-state border: a solid frame inset from the window edges; green
+// while playing, absent while paused.
+BORDER_INSET :: 10
+BORDER_THICKNESS :: 3
+
+// Content inset from window edges; leaves room for the border.
+MARGIN :: 24
 
 // JetBrains Mono has an advance of exactly 0.6 em; 1.15 em line height
 // keeps the glyphs filling most of the cell.
@@ -31,10 +40,21 @@ STATUS :: k2.Color{0xb0, 0xb0, 0xb0, 0xff}
 CURSOR_BG :: k2.Color{0xff, 0xff, 0xff, 0xff}
 CURSOR_FG :: k2.Color{0x17, 0x17, 0x17, 0xff}
 
+// Mark highlighting (per-tick sim scratch, see core/marks.odin).
+OUTPUT_BG :: k2.Color{0xf0, 0xf0, 0xf0, 0xff} // freshly written cells, inverted
+OUTPUT_FG :: k2.Color{0x17, 0x17, 0x17, 0xff}
+INPUT :: k2.Color{0x6b, 0xd9, 0xd9, 0xff} // cyan-ish: operand cells
+HASTE :: k2.Color{0x3f, 0x9d, 0x9d, 0xff} // darker cyan: hasted operands
+LOCKED :: k2.Color{0x70, 0x70, 0x70, 0xff} // comment/data cells
+
+PLAY_BORDER :: k2.Color{0x5d, 0xd0, 0x5d, 0xff} // green frame while playing
+
 DEFAULT_W :: 57
 DEFAULT_H :: 25
 
 DEFAULT_FILE_NAME :: "untitled.orca"
+
+DEFAULT_BPM :: 120
 
 App :: struct {
 	grid:         orca.Grid,
@@ -44,6 +64,21 @@ App :: struct {
 	status_msg:   string, // transient message shown in the status bar
 	status_timer: f32,
 	repeat:       [len(REPEAT_KEYS)]f32,
+
+	// Simulation state.
+	marks:        []orca.Mark,
+	events:       [dynamic]orca.Event, // produced each tick; unused until M5
+	tick:         uint,
+	bpm:          int,
+	playing:      bool,
+	accum:        f32, // elapsed seconds not yet consumed by ticks
+	dirty:        bool, // grid edited while paused; marks need a preview
+}
+
+// Four VM frames per beat — orca-c's timing rule. The single source of
+// truth for tick length (M5 note scheduling must reuse this).
+frame_seconds :: proc(bpm: int) -> f32 {
+	return 60.0 / f32(bpm) / 4.0
 }
 
 main :: proc() {
@@ -65,9 +100,18 @@ main :: proc() {
 	} else {
 		app.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
 	}
+	app.marks = orca.make_marks(app.grid)
+	app.bpm = DEFAULT_BPM
+	app.dirty = true // preview marks for the freshly loaded grid
+	defer orca.destroy_grid(&app.grid)
+	defer delete(app.marks)
+	defer delete(app.events)
+	defer if app.status_msg != "" {
+		delete(app.status_msg)
+	}
 
 	window_w := MARGIN*2 + app.grid.width*(INITIAL_FONT_SIZE * 3 / 5)
-	window_h := MARGIN*2 + app.grid.height*(INITIAL_FONT_SIZE * 23 / 20) + INITIAL_FONT_SIZE + 12
+	window_h := MARGIN*2 + app.grid.height*(INITIAL_FONT_SIZE * 23 / 20) + INITIAL_FONT_SIZE + MARGIN
 	k2.init(window_w, window_h, "mallorca", {window_mode = .Windowed_Resizable})
 	defer k2.shutdown()
 
@@ -85,11 +129,13 @@ main :: proc() {
 		quit := !k2.update() || (ctrl_held() && k2.key_went_down(.Q))
 		if !quit {
 			handle_input(&app)
+			update_sim(&app)
 			tick_status(&app)
 
 			layout := compute_layout(app.grid)
 			k2.clear(BG)
-			draw_grid(app.grid, font, layout)
+			draw_border(&app)
+			draw_grid(app.grid, app.marks, font, layout)
 			draw_cursor(&app, font, layout)
 			draw_status(&app, font, layout)
 			k2.present()
@@ -182,11 +228,22 @@ handle_input :: proc(app: ^App) {
 	// Clearing.
 	if key_repeats(app, 4, .Backspace) || k2.key_went_down(.Delete) || k2.key_went_down(.Period) {
 		orca.grid_set(app.grid, app.cursor_x, app.cursor_y, orca.EMPTY_GLYPH)
+		app.dirty = true
+	}
+
+	// Play/pause.
+	if k2.key_went_down(.Space) {
+		app.playing = !app.playing
+		app.accum = 0
+		set_status(app, fmt.aprintf("%s", "playing" if app.playing else "paused"))
 	}
 
 	if ctrl_held() {
 		if k2.key_went_down(.S) {
 			save(app)
+		}
+		if k2.key_went_down(.F) {
+			step_tick(app) // single-step one frame (orca-c's Ctrl+F)
 		}
 		return // don't treat shortcut keys as glyph input
 	}
@@ -201,6 +258,7 @@ handle_input :: proc(app: ^App) {
 				glyph += 'a' - 'A'
 			}
 			orca.grid_set(app.grid, app.cursor_x, app.cursor_y, glyph)
+			app.dirty = true
 		}
 	}
 
@@ -210,8 +268,47 @@ handle_input :: proc(app: ^App) {
 			glyph := gk.shifted if shift else gk.base
 			if glyph != 0 {
 				orca.grid_set(app.grid, app.cursor_x, app.cursor_y, glyph)
+				app.dirty = true
 			}
 		}
+	}
+}
+
+//------------//
+// SIMULATION //
+//------------//
+
+// Cap on ticks consumed per rendered frame, so a stall (window drag,
+// sleep) doesn't fire a burst of catch-up ticks. (Mallorca policy;
+// orca-c has no such cap.)
+MAX_TICKS_PER_FRAME :: 8
+
+step_tick :: proc(app: ^App) {
+	orca.run_tick(app.grid, app.marks, app.tick, 0, &app.events)
+	app.tick += 1
+	app.dirty = false
+}
+
+update_sim :: proc(app: ^App) {
+	if app.playing {
+		app.accum += k2.get_frame_time()
+		frame := frame_seconds(app.bpm)
+		ticks := 0
+		for app.accum >= frame && ticks < MAX_TICKS_PER_FRAME {
+			app.accum -= frame
+			step_tick(app)
+			ticks += 1
+		}
+		if app.accum >= frame {
+			// Drop whole overdue ticks but keep the fractional phase, so
+			// a stall doesn't shift subsequent tick deadlines.
+			app.accum = math.mod(app.accum, frame)
+		}
+	} else if app.dirty {
+		// Fresh highlighting while paused: compute marks from a scratch
+		// copy of the grid without advancing the simulation.
+		orca.preview_marks(app.grid, app.marks, app.tick, 0)
+		app.dirty = false
 	}
 }
 
@@ -263,11 +360,28 @@ compute_layout :: proc(grid: orca.Grid) -> Layout {
 	return Layout{cell_w = cell_w, cell_h = font_size * LINE_EM, font_size = font_size}
 }
 
-draw_grid :: proc(grid: orca.Grid, font: k2.Font, layout: Layout) {
+// Solid frame just inside the window edges signalling play state:
+// green while playing, nothing while paused.
+draw_border :: proc(app: ^App) {
+	if !app.playing {
+		return
+	}
+	rect := k2.Rect{
+		BORDER_INSET,
+		BORDER_INSET,
+		f32(k2.get_screen_width()) - BORDER_INSET*2,
+		f32(k2.get_screen_height()) - BORDER_INSET*2,
+	}
+	k2.draw_rect_outline(rect, BORDER_THICKNESS, PLAY_BORDER)
+}
+
+draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: Layout) {
 	buf: [1]u8
 	for y in 0 ..< grid.height {
 		for x in 0 ..< grid.width {
 			glyph := orca.grid_get(grid, x, y)
+			mark := marks[y*grid.width + x]
+			pos := k2.Vec2{MARGIN + f32(x)*layout.cell_w, MARGIN + f32(y)*layout.cell_h}
 			color := FG
 			if glyph == orca.EMPTY_GLYPH {
 				// Ruler overlay: '+' every 8x8 intersection, dim '.' elsewhere.
@@ -278,8 +392,22 @@ draw_grid :: proc(grid: orca.Grid, font: k2.Font, layout: Layout) {
 					color = DIM
 				}
 			}
+			// Marks style empty cells too, matching orca-c's tui; haste
+			// wins over output (orca-c applies it last).
+			switch {
+			case .Haste_Input in mark:
+				color = HASTE
+			case .Output in mark:
+				// Freshly written cells draw inverted, like Orca.
+				rect := k2.Rect{pos.x, pos.y, layout.cell_w, layout.cell_h}
+				k2.draw_rect(rect, OUTPUT_BG)
+				color = OUTPUT_FG
+			case .Input in mark:
+				color = INPUT
+			case .Lock in mark:
+				color = LOCKED
+			}
 			buf[0] = glyph
-			pos := k2.Vec2{MARGIN + f32(x)*layout.cell_w, MARGIN + f32(y)*layout.cell_h}
 			k2.draw_text(string(buf[:]), pos, layout.font_size, color, font)
 		}
 	}
@@ -306,14 +434,17 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	} else {
 		name := app.file_name if app.file_name != "" else "(unsaved)"
 		text = fmt.tprintf(
-			"%s   %dx%d   %d,%d   0f   120bpm",
+			"%s   %dx%d   %d,%d   %df   %dbpm   %s",
 			name,
 			app.grid.width,
 			app.grid.height,
 			app.cursor_x,
 			app.cursor_y,
+			app.tick,
+			app.bpm,
+			"play" if app.playing else "stop",
 		)
 	}
-	y := f32(k2.get_screen_height()) - layout.font_size - 6
+	y := f32(k2.get_screen_height()) - layout.font_size - MARGIN
 	k2.draw_text(text, {MARGIN, y}, layout.font_size, STATUS, font)
 }
