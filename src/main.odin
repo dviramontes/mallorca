@@ -4,6 +4,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import NS "core:sys/darwin/Foundation" // macOS-only for now; gate with #+build when porting
 import k2 "../karl2d"
 import orca "core"
 
@@ -75,21 +76,31 @@ main :: proc() {
 	font := k2.load_dynamic_font_from_bytes(FONT_DATA)
 	defer k2.destroy_font(font)
 
-	for k2.update() {
-		if ctrl_held() && k2.key_went_down(.Q) {
+	for {
+		// Drain autoreleased AppKit/GL objects every frame. Neither karl2d
+		// nor a non-bundle executable sets up a per-frame pool, so without
+		// this, memory grows unboundedly while idle.
+		pool := NS.AutoreleasePool.alloc()->init()
+
+		quit := !k2.update() || (ctrl_held() && k2.key_went_down(.Q))
+		if !quit {
+			handle_input(&app)
+			tick_status(&app)
+
+			layout := compute_layout(app.grid)
+			k2.clear(BG)
+			draw_grid(app.grid, font, layout)
+			draw_cursor(&app, font, layout)
+			draw_status(&app, font, layout)
+			k2.present()
+
+			free_all(context.temp_allocator)
+		}
+
+		pool->drain()
+		if quit {
 			break
 		}
-		handle_input(&app)
-		tick_status(&app)
-
-		layout := compute_layout(app.grid)
-		k2.clear(BG)
-		draw_grid(app.grid, font, layout)
-		draw_cursor(&app, font, layout)
-		draw_status(&app, font, layout)
-		k2.present()
-
-		free_all(context.temp_allocator)
 	}
 }
 

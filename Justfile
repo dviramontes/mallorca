@@ -14,25 +14,29 @@ setup:
     git -C karl2d checkout --detach {{karl2d_rev}}
     git -C karl2d apply ../patches/karl2d-mac-modifier-keys.patch
 
+# no audio playback needed (MIDI in M5 uses CoreMIDI); the CoreAudio
+# backend also accrues memory in AudioToolbox internals while idle
+defines := "-define:KARL2D_AUDIO_BACKEND=nil"
+
 # type-check all packages without building
 check:
-    odin check src
+    odin check src {{defines}}
     odin check src/core -no-entry-point
 
 # debug build & run; pass an .orca file to load it
 run file="":
     mkdir -p bin
-    odin run src -debug -out:bin/mallorca -- "{{file}}"
+    odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}"
 
 # debug build
 build:
     mkdir -p bin
-    odin build src -debug -out:bin/mallorca
+    odin build src -debug {{defines}} -out:bin/mallorca
 
 # optimized build
 release:
     mkdir -p bin
-    odin build src -o:speed -out:bin/mallorca
+    odin build src -o:speed {{defines}} -out:bin/mallorca
 
 # run core simulation tests
 test:
