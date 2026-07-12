@@ -18,7 +18,7 @@ independent from rendering and file I/O.
 - Orca-c-compatible operators, per-cell marks, and event generation
 - Live MIDI output via CoreMIDI, with tick-accurate note durations
 - Visual highlighting for inputs, outputs, locked cells, and haste inputs
-- Selection with copy/cut/paste, interactive grid resize, and BPM control
+- Selection with copy/cut/paste, undo, interactive grid resize, and BPM control
 - Headless core package with tests independent of the graphical application
 - Bundled monospace font and example patches
 
@@ -63,7 +63,7 @@ When a blank grid is saved for the first time, Mallorca writes it to
 | Arrow keys | Move the cursor |
 | `Shift` + arrow keys | Extend a rectangular selection |
 | Letters, digits, and operator symbols | Write a glyph at the cursor |
-| `Backspace`, `Delete`, or `.` | Clear the current cell |
+| `Backspace`, `Delete`, or `.` | Clear the selection (or the current cell) |
 | `Tab` | Toggle insert mode (typing advances the cursor) |
 | `<` / `>` | Decrease / increase BPM |
 | `Space` | Play or pause |
@@ -71,14 +71,16 @@ When a blank grid is saved for the first time, Mallorca writes it to
 | `Cmd/Ctrl` + arrow keys | Grow or shrink the grid |
 | `Cmd/Ctrl` + `A` | Select the whole grid |
 | `Cmd/Ctrl` + `C` / `X` / `V` | Copy / cut / paste the selection |
+| `Cmd/Ctrl` + `Z` | Undo the last edit |
 | `Cmd/Ctrl` + `F` | Advance one simulation frame |
 | `Cmd/Ctrl` + `S` | Save the grid |
 | `Cmd/Ctrl` + `Q` | Quit |
 
 Lowercase operators run when banged; hold Shift to enter their uppercase,
-every-frame forms. With no active selection, copy and cut act on the single
-cursor cell. Paste drops its top-left corner at the cursor, clipping anything
-past the grid edge. The status line shows the file, grid dimensions, cursor
+every-frame forms. With no active selection, copy, cut, and clear act on the
+single cursor cell; with a selection they act on the whole rectangle. Paste
+drops its top-left corner at the cursor, clipping anything past the grid edge.
+Undo steps back through recent edits (glyph entry, clear, cut, paste, resize). The status line shows the file, grid dimensions, cursor
 position, frame, BPM, playback state, and an `ins` flag while insert mode is
 on. A green window border indicates that the simulation is playing.
 

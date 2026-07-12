@@ -137,6 +137,10 @@ Each milestone is runnable end to end.
 ### M4 — Livecoding polish
 - BPM adjust keys, frame counter, interactive grid resize, copy/paste,
   insert/append modes as needed.
+- Copy/cut/paste additionally mirror through the macOS system pasteboard, so a
+  block copied in mallorca can be pasted into other apps and an Orca pattern
+  copied from anywhere pastes into the grid (see `src/clipboard.odin`). Undo
+  (`Cmd/Ctrl+Z`) is a full grid+cursor snapshot stack.
 
 ### M5 — MIDI out (explicitly later)
 - CoreMIDI on macOS, consuming the event list M3 already produces. This is

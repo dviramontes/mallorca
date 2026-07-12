@@ -6,6 +6,7 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:strings"
 import NS "core:sys/darwin/Foundation" // macOS-only for now; gate with #+build when porting
 import k2 "../karl2d"
 import orca "core"
@@ -73,6 +74,7 @@ App :: struct {
 	repeat:       [len(REPEAT_KEYS)]f32,
 	insert_mode:  bool, // typing advances the cursor when true
 	audition:     bool, // Enter held: sounding the middle-C audition tone
+	debug:        bool, // --debug: log edit/selection/clipboard activity
 
 	// Rectangular selection: anchored at (sel_x, sel_y), extended to the
 	// cursor. Inactive selections are treated as the single cursor cell.
@@ -84,6 +86,9 @@ App :: struct {
 	clip_cells:   []u8,
 	clip_w:       int,
 	clip_h:       int,
+
+	// Undo history: full grid + cursor snapshots, pushed before each edit.
+	undo:         [dynamic]Undo_Snapshot,
 
 	// Simulation state.
 	marks:        []orca.Mark,
@@ -98,6 +103,18 @@ App :: struct {
 	midi:         Midi,
 	sus:          [dynamic]Sus_Note, // notes awaiting their note-off
 }
+
+// A grid + cursor snapshot for undo. Owns its own copy of the cells.
+Undo_Snapshot :: struct {
+	cells:    []u8,
+	width:    int,
+	height:   int,
+	cursor_x: int,
+	cursor_y: int,
+}
+
+// Cap on retained undo steps; oldest are dropped past this.
+UNDO_MAX :: 128
 
 // A note-on awaiting its note-off, counted down in VM frames (the note's
 // duration). Tick-driven, matching orca-c, so tempo changes stay in sync.
@@ -143,6 +160,7 @@ main :: proc() {
 	} else {
 		app.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
 	}
+	app.debug = debug
 	app.marks = orca.make_marks(app.grid)
 	app.bpm = DEFAULT_BPM
 	app.dirty = true // preview marks for the freshly loaded grid
@@ -152,6 +170,7 @@ main :: proc() {
 	defer delete(app.events)
 	defer delete(app.clip_cells)
 	defer delete(app.sus)
+	defer clear_undo(&app)
 	defer midi_shutdown(&app.midi)
 	defer if app.status_msg != "" {
 		delete(app.status_msg)
@@ -382,11 +401,13 @@ handle_shortcuts :: proc(app: ^App) {
 	if k2.key_went_down(.X) {cut_selection(app)}
 	if k2.key_went_down(.V) {paste_clip(app)}
 	if k2.key_went_down(.A) {select_all(app)}
+	if k2.key_went_down(.Z) {undo(app)}
 }
 
 // Write a glyph at the cursor, collapsing any selection. In insert mode
 // the cursor then advances east (stopping at the right edge).
 put_glyph :: proc(app: ^App, glyph: u8) {
+	push_undo(app)
 	orca.grid_set(app.grid, app.cursor_x, app.cursor_y, glyph)
 	app.sel_active = false
 	app.dirty = true
@@ -395,8 +416,16 @@ put_glyph :: proc(app: ^App, glyph: u8) {
 	}
 }
 
+// Clear the active selection if there is one, otherwise the single cursor
+// cell. (Backspace/Delete/'.' all route here.)
 clear_cell :: proc(app: ^App) {
-	orca.grid_set(app.grid, app.cursor_x, app.cursor_y, orca.EMPTY_GLYPH)
+	push_undo(app)
+	x0, y0, x1, y1 := selection_rect(app)
+	for y in y0 ..= y1 {
+		for x in x0 ..= x1 {
+			orca.grid_set(app.grid, x, y, orca.EMPTY_GLYPH)
+		}
+	}
 	app.dirty = true
 }
 
@@ -415,6 +444,9 @@ begin_selection :: proc(app: ^App) {
 		app.sel_active = true
 		app.sel_x = app.cursor_x
 		app.sel_y = app.cursor_y
+		if app.debug {
+			fmt.eprintfln("select: anchor at (%d,%d)", app.sel_x, app.sel_y)
+		}
 	}
 }
 
@@ -446,11 +478,22 @@ copy_selection :: proc(app: ^App) {
 			app.clip_cells[y*w + x] = orca.grid_get(app.grid, x0 + x, y0 + y)
 		}
 	}
+	// Mirror the block to the system pasteboard (rows joined by '\n') so it can
+	// be pasted into other apps, and so our own paste — which prefers the
+	// system clipboard — round-trips an in-app copy faithfully.
+	system_clipboard_write(clip_to_text(app, context.temp_allocator))
+	if app.debug {
+		fmt.eprintfln(
+			"copy: sel_active=%v rect=(%d,%d)-(%d,%d) -> %dx%d %q",
+			app.sel_active, x0, y0, x1, y1, w, h, string(app.clip_cells),
+		)
+	}
 	set_status(app, fmt.aprintf("copied %dx%d", w, h))
 }
 
 cut_selection :: proc(app: ^App) {
 	copy_selection(app)
+	push_undo(app)
 	x0, y0, x1, y1 := selection_rect(app)
 	for y in y0 ..= y1 {
 		for x in x0 ..= x1 {
@@ -462,19 +505,75 @@ cut_selection :: proc(app: ^App) {
 	set_status(app, fmt.aprintf("cut %dx%d", app.clip_w, app.clip_h))
 }
 
-// Paste the clipboard block with its top-left at the cursor; cells that
-// fall outside the grid are dropped (grid_set clips).
+// Serialize the internal clipboard block to text, rows joined by '\n'.
+clip_to_text :: proc(app: ^App, allocator := context.allocator) -> string {
+	b: strings.Builder
+	strings.builder_init(&b, allocator)
+	for y in 0 ..< app.clip_h {
+		if y > 0 {
+			strings.write_byte(&b, '\n')
+		}
+		strings.write_bytes(&b, app.clip_cells[y*app.clip_w:y*app.clip_w + app.clip_w])
+	}
+	return strings.to_string(b)
+}
+
+// Paste at the cursor. Prefers the system pasteboard so a pattern copied from
+// anywhere drops into the grid; falls back to the internal block clipboard
+// when the pasteboard has no usable text.
 paste_clip :: proc(app: ^App) {
-	if app.clip_w == 0 {
+	if text, ok := system_clipboard_read(context.temp_allocator); ok {
+		if app.debug {
+			fmt.eprintfln("paste: system clipboard %q at cursor=(%d,%d)", text, app.cursor_x, app.cursor_y)
+		}
+		paste_text(app, text)
 		return
 	}
+	if app.debug {
+		fmt.eprintfln(
+			"paste: internal clip=%dx%d at cursor=(%d,%d) %q",
+			app.clip_w, app.clip_h, app.cursor_x, app.cursor_y, string(app.clip_cells),
+		)
+	}
+	if app.clip_w == 0 {
+		set_status(app, fmt.aprintf("nothing to paste"))
+		return
+	}
+	push_undo(app)
 	for y in 0 ..< app.clip_h {
 		for x in 0 ..< app.clip_w {
 			orca.grid_set(app.grid, app.cursor_x + x, app.cursor_y + y, app.clip_cells[y*app.clip_w + x])
 		}
 	}
+	app.sel_active = false // drop the highlight so the paste is visible
 	app.dirty = true
 	set_status(app, fmt.aprintf("pasted %dx%d", app.clip_w, app.clip_h))
+}
+
+// Paste free-form text at the cursor: '\n' starts a new row (back at the
+// cursor column), '\r' is ignored, non-printable bytes become empty cells.
+// Cells past the grid edge are dropped (grid_set clips).
+paste_text :: proc(app: ^App, text: string) {
+	push_undo(app)
+	x, y := app.cursor_x, app.cursor_y
+	lines := 1
+	for c in transmute([]u8)text {
+		switch c {
+		case '\n':
+			y += 1
+			x = app.cursor_x
+			lines += 1
+		case '\r':
+		// ignored
+		case:
+			glyph := c if c >= '!' && c <= '~' else orca.EMPTY_GLYPH
+			orca.grid_set(app.grid, x, y, glyph)
+			x += 1
+		}
+	}
+	app.sel_active = false
+	app.dirty = true
+	set_status(app, fmt.aprintf("pasted %d line%s", lines, "" if lines == 1 else "s"))
 }
 
 // Reallocate the grid (and mark buffer), preserving the overlapping
@@ -485,6 +584,7 @@ resize_grid_by :: proc(app: ^App, dw, dh: int) {
 	if nw == app.grid.width && nh == app.grid.height {
 		return
 	}
+	push_undo(app)
 	ng := orca.resize_grid(app.grid, nw, nh)
 	orca.destroy_grid(&app.grid)
 	app.grid = ng
@@ -495,6 +595,63 @@ resize_grid_by :: proc(app: ^App, dw, dh: int) {
 	app.sel_active = false
 	app.dirty = true
 	set_status(app, fmt.aprintf("%dx%d", nw, nh))
+}
+
+//------//
+// UNDO //
+//------//
+
+// Snapshot the grid and cursor before a mutating edit. Coalescing is left to
+// callers; every call here records one undo step. Oldest steps past UNDO_MAX
+// are dropped.
+push_undo :: proc(app: ^App) {
+	snap := Undo_Snapshot {
+		cells    = make([]u8, len(app.grid.cells)),
+		width    = app.grid.width,
+		height   = app.grid.height,
+		cursor_x = app.cursor_x,
+		cursor_y = app.cursor_y,
+	}
+	copy(snap.cells, app.grid.cells)
+	append(&app.undo, snap)
+	if len(app.undo) > UNDO_MAX {
+		delete(app.undo[0].cells)
+		ordered_remove(&app.undo, 0)
+	}
+}
+
+// Restore the most recent snapshot, replacing the current grid (and rebuilding
+// marks if the dimensions changed).
+undo :: proc(app: ^App) {
+	if len(app.undo) == 0 {
+		set_status(app, fmt.aprintf("nothing to undo"))
+		return
+	}
+	snap := pop(&app.undo)
+	resized := snap.width != app.grid.width || snap.height != app.grid.height
+	orca.destroy_grid(&app.grid)
+	app.grid = orca.Grid {
+		cells  = snap.cells, // transfer ownership of the snapshot buffer
+		width  = snap.width,
+		height = snap.height,
+	}
+	if resized {
+		delete(app.marks)
+		app.marks = orca.make_marks(app.grid)
+	}
+	app.cursor_x = clamp(snap.cursor_x, 0, app.grid.width - 1)
+	app.cursor_y = clamp(snap.cursor_y, 0, app.grid.height - 1)
+	app.sel_active = false
+	app.dirty = true
+	set_status(app, fmt.aprintf("undo (%d left)", len(app.undo)))
+}
+
+clear_undo :: proc(app: ^App) {
+	for snap in app.undo {
+		delete(snap.cells)
+	}
+	delete(app.undo)
+	app.undo = nil
 }
 
 //------------//
