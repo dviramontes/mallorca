@@ -153,6 +153,96 @@ Each milestone is runnable end to end.
   - select and retain a CoreMIDI destination;
   - MIDI clock (24 PPQN), if added, is a separate feature from VM events.
 
+### M6 — Modal (vim-style) editing  ← current
+
+A deliberate departure from Orca: layer a modal, vim-inspired editing model
+over the grid. Orca's native model is "the keyboard always types glyphs"; vim's
+Normal mode reuses the letter keys as commands, so the two cannot coexist in
+one mode. Nearly every vim motion/operator letter (`h j k l w b d y p r`) is
+also a valid Orca operator, which forces the separation. M6 resolves this with
+explicit modes and adopts only the vim idioms that map cleanly onto a
+fixed-size glyph grid.
+
+**Guiding rule ("only where it makes sense").** The grid is fixed-size ASCII:
+no variable-length lines to insert/remove, no real "words". We take vim's
+*modes, motions, and operators*, but redefine or drop anything whose vim
+meaning assumes a growable text buffer. Orca-central keys keep working in every
+mode: `Space` (play/pause), the `Cmd/Ctrl` chords (save, step, resize,
+clipboard, undo), the arrow keys (movement), and `Enter` (audition tone).
+
+**Modes.** `Esc` is the pivot the user asked for: it leaves per-cell glyph
+entry (Insert) and returns to whole-grid, multi-line navigation (Normal).
+
+| Mode | Purpose | Enter | Leave |
+| --- | --- | --- | --- |
+| Insert | Type a glyph, then advance the cursor east (text-like) | `i` `a` `I` `A` (from Normal); launch default | `Esc` → Normal |
+| Normal | Navigate the whole grid; keys are motions/commands | `Esc` (from Insert/Visual) | `i` `a` `v` … |
+| Visual | Rectangular block select (reuses the M4 selection) | `v` (from Normal) | `Esc`, or an operator (`y` `d` `c`) |
+
+Launching in **Insert** preserves mallorca's out-of-box feel — typing operators
+"just works" — and makes the vim layer opt-in the moment you press `Esc`. The
+status bar shows `-- INSERT --` / `-- NORMAL --` / `-- VISUAL --` in place of
+today's `ins` flag.
+
+**Motions** (Normal + Visual; optional count prefix, e.g. `5j`):
+- `h j k l` — left/down/up/right (arrows still work everywhere)
+- `0` / `$` — first / last column of the row
+- `^` — first non-empty cell in the row
+- `w` / `b` — next / previous non-empty cell in the row (grid-redefined "word")
+- `gg` / `G` — top / bottom row, same column
+- a leading `{count}` repeats the next motion
+
+**Normal-mode edits:**
+- `x` — clear the cell under the cursor
+- `r{glyph}` — replace one cell with the next glyph typed, stay in Normal
+- `d{motion}` / `c{motion}` — clear a span (and, for `c`, enter Insert);
+  `dd` / `cc` act on the whole row (clear to `.`, since rows can't be removed)
+- `y{motion}` / `yy` — yank a span / the row to the clipboard
+- `p` / `P` — paste the clipboard at / before the cursor (reuses the system
+  pasteboard path from M4)
+- `u` — undo (shares the M4 stack); `Ctrl+R` / `Cmd+Shift+Z` — redo (adds a
+  redo stack)
+- `.` — repeat last edit (stretch goal; may defer)
+
+**Visual mode:** `v` toggles a rectangular block anchored at the cursor;
+motions extend it; `y` yank, `d`/`x` delete, `c` change (delete → Insert),
+`p` paste-over; `Esc` cancels.
+
+**Deliberately skipped or redefined** (the "where it makes sense" cuts):
+- `o`/`O` (open line), `J` (join), true `dd` row removal — the grid is
+  fixed-size, so there are no lines to add/remove; `dd`/`cc` clear the row.
+- `w`/`b` word semantics → redefined as non-empty-run jumps within a row.
+- Ex commands (`:`), search (`/`), multiple registers, macros — out of scope;
+  `:` and `/` stay Orca glyphs, never a command line.
+- `Space` stays play/pause (not a rightward motion) — an intentional
+  Orca-over-vim override.
+
+**Implementation notes:**
+- Add an `Edit_Mode` enum (`.Insert` `.Normal` `.Visual`) plus small pending
+  state (count digits, pending operator `d`/`c`/`y`, pending `g`, pending `r`)
+  to `App`; fold today's `insert_mode` bool into it.
+- Dispatch by mode near the top of `handle_input`: Insert keeps the current
+  glyph-entry path; Normal/Visual consume letters/digits as commands. The
+  `Cmd/Ctrl` chords, arrows, `Space`, and `Enter` are handled *before* the
+  mode branch so they work in every mode.
+- Motions resolve to a target cell; operators apply over the inclusive
+  rectangle between origin and target, reusing `selection_rect`, `clear_cell`,
+  `copy_selection`, and `paste_*`.
+- Redo needs a redo stack that `push_undo` clears on a fresh edit (standard);
+  this extends the M4 undo stack.
+- The whole layer lives in `main.odin` (a host concern); `core` is untouched.
+
+**Deliverable:** `Esc` toggles Normal/Insert; `hjkl` + counts navigate;
+`x`/`dd`/`yy`/`p` and `v`+`y` edit; the status bar shows the mode; and classic
+glyph typing still works out of the box on launch.
+
+**Resolved decisions:**
+1. Insert semantics: **type-and-advance** — writing a glyph moves the cursor
+   east (text-like); `r{glyph}` in Normal is the in-place single replace.
+2. Launch mode: **Insert** — classic typing works out of the box; `Esc` opens
+   the vim layer.
+3. Redo: **both** `Ctrl+R` (vim) and `Cmd+Shift+Z` (mac).
+
 ## Justfile commands
 
 - `just setup` — clone karl2d into `karl2d/`, pinned to a known commit
