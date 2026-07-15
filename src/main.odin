@@ -32,6 +32,10 @@ LINE_EM :: 1.15
 
 RULER_SPACING :: 8
 
+// Cursor blink: shown for this many seconds, then hidden for the same, so a
+// full cycle is 2×. ~0.53s matches the common editor blink rate.
+BLINK_INTERVAL :: 0.53
+
 // The status line renders at this fraction of the grid glyph size — it's
 // heads-up/debug text, secondary to the grid.
 STATUS_SCALE :: 0.6
@@ -75,6 +79,13 @@ App :: struct {
 	insert_mode:  bool, // typing advances the cursor when true
 	audition:     bool, // Enter held: sounding the middle-C audition tone
 	debug:        bool, // --debug: log edit/selection/clipboard activity
+
+	// Cursor blink: `blink` accumulates seconds and toggles visibility every
+	// BLINK_INTERVAL; movement resets it so the cursor is always shown while
+	// you're navigating or typing.
+	blink:        f32,
+	blink_x:      int,
+	blink_y:      int,
 
 	// Rectangular selection: anchored at (sel_x, sel_y), extended to the
 	// cursor. Inactive selections are treated as the single cursor cell.
@@ -196,6 +207,7 @@ main :: proc() {
 		if !quit {
 			handle_input(&app)
 			update_sim(&app)
+			update_blink(&app)
 			tick_status(&app)
 
 			layout := compute_layout(app.grid)
@@ -776,6 +788,22 @@ set_status :: proc(app: ^App, msg: string) {
 	app.status_timer = STATUS_MSG_SECONDS
 }
 
+// Advance the cursor blink. Any cursor movement resets the phase to fully
+// visible, so the cursor never blinks away the instant you move or type.
+update_blink :: proc(app: ^App) {
+	if app.cursor_x != app.blink_x || app.cursor_y != app.blink_y {
+		app.blink = 0
+		app.blink_x = app.cursor_x
+		app.blink_y = app.cursor_y
+	}
+	app.blink += k2.get_frame_time()
+}
+
+// True during the "on" half of the blink cycle.
+cursor_visible :: proc(app: ^App) -> bool {
+	return int(app.blink / BLINK_INTERVAL) % 2 == 0
+}
+
 tick_status :: proc(app: ^App) {
 	if app.status_timer <= 0 {
 		return
@@ -872,6 +900,10 @@ draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: La
 // Inverted cell at the cursor; empty cells show '@' (like Orca) so the
 // cursor is always visible.
 draw_cursor :: proc(app: ^App, font: k2.Font, layout: Layout) {
+	// Off half of the blink: skip the cursor so the underlying cell shows.
+	if !cursor_visible(app) {
+		return
+	}
 	glyph := orca.grid_get(app.grid, app.cursor_x, app.cursor_y)
 	if glyph == orca.EMPTY_GLYPH {
 		glyph = '@'
