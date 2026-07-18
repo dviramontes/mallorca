@@ -12,6 +12,7 @@ import "core:net"
 import "core:os"
 import "core:strings"
 import "core:time"
+import orca "core"
 
 NET_DEFAULT_PORT :: 4001
 
@@ -141,10 +142,83 @@ run_net_spike :: proc() {
 	fmt.println("net-spike: OK")
 }
 
-// run_net_host connects as the room host and stays connected, printing player
-// events (player_join / player_leave) as browsers come and go. A stand-in for
-// the real host loop until the app is wired to the network. `--net-host`.
-run_net_host :: proc() {
+// A per-player simulation the host owns: its grid + marks + scratch events.
+@(private = "file")
+Host_Sim :: struct {
+	grid:   orca.Grid,
+	marks:  []orca.Mark,
+	events: [dynamic]orca.Event,
+	tick:   uint,
+}
+
+@(private = "file")
+Poll_Status :: enum {
+	Line,
+	Empty,
+	Closed,
+}
+
+// Non-blocking line read: a complete line if one is ready, Empty if not yet, or
+// Closed if the peer went away. Requires the socket in non-blocking mode.
+@(private = "file")
+net_poll_line :: proc(c: ^Net_Conn) -> (line: string, status: Poll_Status) {
+	for {
+		if idx := index_byte(c.rbuf[:], '\n'); idx >= 0 {
+			out := strings.clone(string(c.rbuf[:idx]), context.temp_allocator)
+			consumed := idx + 1
+			copy(c.rbuf[:], c.rbuf[consumed:])
+			resize(&c.rbuf, len(c.rbuf) - consumed)
+			return out, .Line
+		}
+		tmp: [4096]u8
+		n, err := net.recv_tcp(c.sock, tmp[:])
+		if err == .Would_Block || err == .Timeout {
+			return "", .Empty
+		}
+		if err != nil || n == 0 {
+			return "", .Closed
+		}
+		append(&c.rbuf, ..tmp[:n])
+	}
+}
+
+// Build and send an evaluated-grid snapshot for one player.
+@(private = "file")
+host_send_snapshot :: proc(c: ^Net_Conn, pid: string, sim: ^Host_Sim) {
+	Snapshot :: struct {
+		t:    string,
+		pid:  string,
+		w:    int,
+		h:    int,
+		grid: string,
+		tick: uint,
+	}
+	snap := Snapshot {
+		t    = "snapshot",
+		pid  = pid,
+		w    = sim.grid.width,
+		h    = sim.grid.height,
+		grid = string(sim.grid.cells),
+		tick = sim.tick,
+	}
+	if data, err := json.marshal(snap, allocator = context.temp_allocator); err == nil {
+		net_send_line(c, string(data))
+	}
+}
+
+@(private = "file")
+host_free_sim :: proc(sim: ^Host_Sim) {
+	orca.destroy_grid(&sim.grid)
+	delete(sim.marks)
+	delete(sim.events)
+	free(sim)
+}
+
+// run_net_host connects as the room host and simulates a grid per player: it
+// applies remote edits, ticks every grid on the host clock, and streams the
+// evaluated grid back for each player. Headless stand-in for the app's host
+// loop (no window, no MIDI yet). `--net-host`.
+run_net_host :: proc(debug := false) {
 	fmt.printfln("net-host: dialing 127.0.0.1:%d ...", NET_DEFAULT_PORT)
 	c, ok := net_dial()
 	if !ok {
@@ -158,14 +232,97 @@ run_net_host :: proc() {
 	}
 	fmt.printfln("net-host: hosting room %s", room)
 	fmt.printfln("net-host: open http://localhost:4000/room/%s in a browser", room)
-	fmt.println("net-host: waiting for player events (Ctrl-C to quit) ...")
+	fmt.println("net-host: simulating; Ctrl-C to quit ...")
+
+	sims := make(map[string]^Host_Sim)
+	defer {
+		for _, sim in sims {
+			host_free_sim(sim)
+		}
+		delete(sims)
+	}
+
+	// One flat struct covers player_join / player_leave / edit (json.unmarshal
+	// ignores absent fields).
+	Host_Msg :: struct {
+		t:    string,
+		pid:  string,
+		name: string,
+		x:    int,
+		y:    int,
+		g:    string,
+	}
+
+	// MIDI output is shared across all players (one device, one channel space).
+	// Note scheduling reuses the app's frame-counted scheduler (main.odin).
+	midi := midi_init(debug)
+	sus: [dynamic]Sus_Note
+	defer midi_shutdown(&midi)
+	defer delete(sus)
+	defer flush_notes(&midi, &sus) // runs first (LIFO): silence before shutdown
+	if midi.ok {
+		fmt.printfln("net-host: MIDI ready (hardware destination: %v)", midi.has_dest)
+	} else {
+		fmt.println("net-host: no MIDI output available")
+	}
+
+	net.set_blocking(c.sock, false)
+	frame := f64(frame_seconds(DEFAULT_BPM))
+	last := time.tick_now()
 
 	for {
-		line, lok := net_read_line(&c)
-		if !lok {
-			fmt.println("net-host: server closed the connection")
-			break
+		// Drain any pending messages from the server.
+		drain: for {
+			line, st := net_poll_line(&c)
+			switch st {
+			case .Closed:
+				fmt.println("net-host: server closed the connection")
+				return
+			case .Empty:
+				break drain
+			case .Line:
+				m: Host_Msg
+				if json.unmarshal(transmute([]u8)line, &m, allocator = context.temp_allocator) !=
+				   nil {
+					continue
+				}
+				switch m.t {
+				case "player_join":
+					if m.pid not_in sims {
+						sim := new(Host_Sim)
+						sim.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
+						sim.marks = orca.make_marks(sim.grid)
+						sims[strings.clone(m.pid)] = sim
+						fmt.printfln("net-host: + player %s (%s)", m.name, m.pid)
+						host_send_snapshot(&c, m.pid, sim)
+					}
+				case "player_leave":
+					if sim, found := sims[m.pid]; found {
+						host_free_sim(sim)
+						delete_key(&sims, m.pid)
+						fmt.printfln("net-host: - player %s", m.pid)
+					}
+				case "edit":
+					if sim, found := sims[m.pid]; found && len(m.g) > 0 {
+						orca.grid_set(sim.grid, m.x, m.y, m.g[0])
+					}
+				}
+			}
 		}
-		fmt.printfln("net-host: <- %s", line)
+
+		// Tick every grid on the host clock, then stream each evaluated grid.
+		if time.duration_seconds(time.tick_since(last)) >= frame {
+			last = time.tick_now()
+			advance_notes(&midi, &sus) // expire notes from earlier ticks first
+			for pid, sim in sims {
+				orca.run_tick(sim.grid, sim.marks, sim.tick, 0, &sim.events)
+				sim.tick += 1
+				dispatch_events(&midi, &sus, sim.events[:]) // sound this tick's events
+				host_send_snapshot(&c, pid, sim)
+			}
+		}
+
+		free_all(context.temp_allocator)
+		time.sleep(2 * time.Millisecond)
 	}
 }

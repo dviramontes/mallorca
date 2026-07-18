@@ -168,7 +168,7 @@ main :: proc() {
 		return
 	}
 	if net_host {
-		run_net_host()
+		run_net_host(debug)
 		return
 	}
 
@@ -241,7 +241,7 @@ main :: proc() {
 
 		pool->drain()
 		if quit {
-			flush_notes(&app) // silence any sustained notes before exit
+			flush_notes(&app.midi, &app.sus) // silence any sustained notes before exit
 			break
 		}
 	}
@@ -384,7 +384,7 @@ handle_input :: proc(app: ^App) {
 		app.playing = !app.playing
 		app.accum = 0
 		if !app.playing {
-			flush_notes(app) // don't leave notes hanging when stopping
+			flush_notes(&app.midi, &app.sus) // don't leave notes hanging when stopping
 		}
 		set_status(app, fmt.aprintf("%s", "playing" if app.playing else "paused"))
 	}
@@ -423,7 +423,7 @@ handle_shortcuts :: proc(app: ^App) {
 		// Single-step one frame (orca-c's Ctrl+F). Release the previous
 		// step's notes first so a manually stepped note never hangs past
 		// the next step regardless of its programmed duration.
-		flush_notes(app)
+		flush_notes(&app.midi, &app.sus)
 		step_tick(app)
 	}
 	if k2.key_went_down(.C) {copy_selection(app)}
@@ -694,43 +694,45 @@ MAX_TICKS_PER_FRAME :: 8
 
 step_tick :: proc(app: ^App) {
 	orca.run_tick(app.grid, app.marks, app.tick, 0, &app.events)
-	advance_notes(app) // expire notes triggered on earlier ticks first
-	dispatch_events(app) // then emit this tick's events (and schedule new notes)
+	advance_notes(&app.midi, &app.sus) // expire notes triggered on earlier ticks first
+	dispatch_events(&app.midi, &app.sus, app.events[:]) // then emit this tick's events
 	app.tick += 1
 	app.dirty = false
 }
 
 // Count down every sustained note by one frame; send note-off for any that
 // reach the end of their duration.
-advance_notes :: proc(app: ^App) {
+// The note scheduler takes (midi, sus) rather than the whole App so both the
+// GUI host and the headless network host (net.odin) share one implementation.
+advance_notes :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note) {
 	i := 0
-	for i < len(app.sus) {
-		app.sus[i].frames -= 1
-		if app.sus[i].frames <= 0 {
-			midi_note_off(&app.midi, app.sus[i].channel, app.sus[i].note)
-			unordered_remove(&app.sus, i)
+	for i < len(sus) {
+		sus[i].frames -= 1
+		if sus[i].frames <= 0 {
+			midi_note_off(midi, sus[i].channel, sus[i].note)
+			unordered_remove(sus, i)
 		} else {
 			i += 1
 		}
 	}
 }
 
-// Turn this tick's VM events into MIDI. OSC ('=') and UDP (';') are network
+// Turn a tick's VM events into MIDI. OSC ('=') and UDP (';') are network
 // transports and remain deferred; the VM still produces them.
-dispatch_events :: proc(app: ^App) {
-	for ev in app.events {
+dispatch_events :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note, events: []orca.Event) {
+	for ev in events {
 		switch e in ev {
 		case orca.Midi_Note_Event:
 			note := u8(clamp(int(e.octave)*12 + int(e.note), 0, 127))
 			if e.mono {
-				stop_channel(app, e.channel) // '%' steals its channel
+				stop_channel(midi, sus, e.channel) // '%' steals its channel
 			}
-			midi_note_on(&app.midi, e.channel, note, e.velocity)
-			append(&app.sus, Sus_Note{channel = e.channel, note = note, frames = max(int(e.duration), 1)})
+			midi_note_on(midi, e.channel, note, e.velocity)
+			append(sus, Sus_Note{channel = e.channel, note = note, frames = max(int(e.duration), 1)})
 		case orca.Midi_CC_Event:
-			midi_cc(&app.midi, e.channel, e.control, e.value)
+			midi_cc(midi, e.channel, e.control, e.value)
 		case orca.Midi_PB_Event:
-			midi_pitch_bend(&app.midi, e.channel, e.lsb, e.msb)
+			midi_pitch_bend(midi, e.channel, e.lsb, e.msb)
 		case orca.Osc_Ints_Event: // deferred
 		case orca.Udp_String_Event: // deferred
 		}
@@ -738,12 +740,12 @@ dispatch_events :: proc(app: ^App) {
 }
 
 // Send note-off for and drop every sustained note on `channel` (monophony).
-stop_channel :: proc(app: ^App, channel: u8) {
+stop_channel :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note, channel: u8) {
 	i := 0
-	for i < len(app.sus) {
-		if app.sus[i].channel == channel {
-			midi_note_off(&app.midi, app.sus[i].channel, app.sus[i].note)
-			unordered_remove(&app.sus, i)
+	for i < len(sus) {
+		if sus[i].channel == channel {
+			midi_note_off(midi, sus[i].channel, sus[i].note)
+			unordered_remove(sus, i)
 		} else {
 			i += 1
 		}
@@ -751,11 +753,11 @@ stop_channel :: proc(app: ^App, channel: u8) {
 }
 
 // Silence and forget all sustained notes (pause, quit, or device change).
-flush_notes :: proc(app: ^App) {
-	for n in app.sus {
-		midi_note_off(&app.midi, n.channel, n.note)
+flush_notes :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note) {
+	for n in sus {
+		midi_note_off(midi, n.channel, n.note)
 	}
-	clear(&app.sus)
+	clear(sus)
 }
 
 update_sim :: proc(app: ^App) {
