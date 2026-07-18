@@ -199,7 +199,10 @@ defmodule MallorcaServerWeb.RoomLive do
         </div>
         <p :if={@rows == []} class="text-center opacity-60">waiting for host…</p>
 
-        <p class="text-center text-xs opacity-60">tick {@tick} · type to edit · arrows to move</p>
+        <p class="text-center text-xs opacity-60">
+          <span class="font-mono">{if rem(@tick || 0, 2) == 0, do: "■", else: "□"}</span>
+          · type to edit · arrows to move
+        </p>
 
         <div class="max-w-3xl mx-auto">
           <h2 class="text-xs uppercase opacity-60 mb-1">Players ({length(@roster)})</h2>

@@ -24,7 +24,7 @@ defmodule MallorcaServerWeb.EditorLoopTest do
 
     # Host streams an initial (blank) grid; the LiveView renders it.
     send_line(host, %{t: "snapshot", pid: pid, w: 3, h: 1, grid: "...", tick: 0})
-    assert eventually(fn -> render(lv) =~ "tick 0" end)
+    assert eventually(fn -> not (render(lv) =~ "waiting for host") end)
 
     # Typing a glyph sends an edit at the cursor (0,0) to the host...
     render_hook(lv, "key", %{"key" => "D"})
@@ -32,7 +32,7 @@ defmodule MallorcaServerWeb.EditorLoopTest do
 
     # ...and the host's evaluated snapshot shows up in the editor.
     send_line(host, %{t: "snapshot", pid: pid, w: 3, h: 1, grid: "D..", tick: 1})
-    assert eventually(fn -> render(lv) =~ "tick 1" end)
+    assert eventually(fn -> render(lv) =~ "D" end)
 
     :gen_tcp.close(host)
   end
@@ -58,7 +58,7 @@ defmodule MallorcaServerWeb.EditorLoopTest do
       tick: 0
     })
 
-    assert eventually(fn -> render(lv) =~ "tick 0" end)
+    assert eventually(fn -> not (render(lv) =~ "waiting for host") end)
 
     render_hook(lv, "paste", %{"text" => "..C\n..7"})
 
