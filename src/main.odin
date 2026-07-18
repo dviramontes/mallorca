@@ -814,6 +814,7 @@ update_sim :: proc(app: ^App) {
 			step_tick(app) // host's own grid (runs advance_notes once for all)
 			if app.host_active {
 				host_tick(&app.host, &app.midi, &app.sus) // remote players
+				host_send_own(&app.host, app.grid, app.tick) // our grid -> /admin
 			}
 			ticks += 1
 		}
@@ -827,6 +828,9 @@ update_sim :: proc(app: ^App) {
 		// copy of the grid without advancing the simulation.
 		orca.preview_marks(app.grid, app.marks, app.tick, 0)
 		app.dirty = false
+		if app.host_active {
+			host_send_own(&app.host, app.grid, app.tick) // reflect paused edits on /admin
+		}
 	}
 }
 

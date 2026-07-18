@@ -68,10 +68,18 @@ defmodule MallorcaServer.RoomServer do
   end
 
   def handle_call(:info, _from, state) do
+    # The native host is shown as a participant on the dashboard (its grid is
+    # cached under the reserved "host" pid); it is not a browser player, so it
+    # is not part of the roster used for /room or the host's welcome.
+    players =
+      if state.host,
+        do: roster(state) ++ [%{id: "host", name: "host (native)"}],
+        else: roster(state)
+
     info = %{
       code: state.code,
       host_online: state.host != nil,
-      players: roster(state),
+      players: players,
       snapshots: state.snapshots
     }
 
@@ -101,7 +109,7 @@ defmodule MallorcaServer.RoomServer do
     cond do
       pid == state.host ->
         Logger.info("room #{state.code}: host detached")
-        state = %{state | host: nil}
+        state = %{state | host: nil, snapshots: Map.delete(state.snapshots, "host")}
         broadcast_roster(state)
         {:noreply, state}
 

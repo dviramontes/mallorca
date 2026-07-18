@@ -373,6 +373,14 @@ host_tick :: proc(st: ^Host_State, midi: ^Midi, sus: ^[dynamic]Sus_Note) {
 	}
 }
 
+// Stream the host's own grid to the room (reserved pid "host"), so it shows on
+// the admin dashboard alongside the remote players.
+host_send_own :: proc(st: ^Host_State, grid: orca.Grid, tick: uint) {
+	if st.status == .Connected {
+		host_send_snapshot(&st.conn, "host", grid, tick)
+	}
+}
+
 host_shutdown :: proc(st: ^Host_State) {
 	for _, sim in st.sims {
 		host_free_sim(sim)

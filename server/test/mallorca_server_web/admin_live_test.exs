@@ -36,4 +36,23 @@ defmodule MallorcaServerWeb.AdminLiveTest do
 
     Process.exit(player, :kill)
   end
+
+  test "shows the native host as a participant with its own grid", %{conn: conn} do
+    code = Rooms.gen_code()
+    Rooms.attach_host(code, spawn(fn -> Process.sleep(:infinity) end))
+
+    RoomServer.route_snapshot(code, %{
+      "pid" => "host",
+      "w" => 3,
+      "h" => 1,
+      "grid" => "C..",
+      "tick" => 0
+    })
+
+    RoomServer.info(code)
+
+    {:ok, lv, _html} = live(admin_conn(conn), ~p"/admin")
+    assert render(lv) =~ "host (native)"
+    assert render(lv) =~ "C.."
+  end
 end
