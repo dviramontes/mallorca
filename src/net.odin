@@ -218,7 +218,7 @@ host_free_sim :: proc(sim: ^Host_Sim) {
 // applies remote edits, ticks every grid on the host clock, and streams the
 // evaluated grid back for each player. Headless stand-in for the app's host
 // loop (no window, no MIDI yet). `--net-host`.
-run_net_host :: proc() {
+run_net_host :: proc(debug := false) {
 	fmt.printfln("net-host: dialing 127.0.0.1:%d ...", NET_DEFAULT_PORT)
 	c, ok := net_dial()
 	if !ok {
@@ -251,6 +251,19 @@ run_net_host :: proc() {
 		x:    int,
 		y:    int,
 		g:    string,
+	}
+
+	// MIDI output is shared across all players (one device, one channel space).
+	// Note scheduling reuses the app's frame-counted scheduler (main.odin).
+	midi := midi_init(debug)
+	sus: [dynamic]Sus_Note
+	defer midi_shutdown(&midi)
+	defer delete(sus)
+	defer flush_notes(&midi, &sus) // runs first (LIFO): silence before shutdown
+	if midi.ok {
+		fmt.printfln("net-host: MIDI ready (hardware destination: %v)", midi.has_dest)
+	} else {
+		fmt.println("net-host: no MIDI output available")
 	}
 
 	net.set_blocking(c.sock, false)
@@ -300,9 +313,11 @@ run_net_host :: proc() {
 		// Tick every grid on the host clock, then stream each evaluated grid.
 		if time.duration_seconds(time.tick_since(last)) >= frame {
 			last = time.tick_now()
+			advance_notes(&midi, &sus) // expire notes from earlier ticks first
 			for pid, sim in sims {
 				orca.run_tick(sim.grid, sim.marks, sim.tick, 0, &sim.events)
 				sim.tick += 1
+				dispatch_events(&midi, &sus, sim.events[:]) // sound this tick's events
 				host_send_snapshot(&c, pid, sim)
 			}
 		}
