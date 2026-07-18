@@ -240,6 +240,14 @@ Platform-guarded like `midi.odin`.
   players keep editing against a stalled clock until it returns.
 - Server restart → players rejoin by room code; the host re-registers its grids.
 
+**Persistence (crash recovery).** The server persists each room + per-player
+grid snapshot to **SQLite** (via Ecto). A host-*process* crash already recovers
+for free from the server's in-memory snapshots (they relay through it); SQLite
+adds durability across *server* restarts (or both crashing) and backs admin
+session history. Snapshots are written on edit (debounced) plus periodic
+checkpoints — not every tick. On reconnect the host rehydrates its VMs from the
+latest snapshots.
+
 **Deliberately deferred / out of scope.**
 - Players seeing each other's grids/cursors → **M8**.
 - Server-side or browser-side VM — the host simulates everything.
@@ -247,10 +255,11 @@ Platform-guarded like `midi.odin`.
 - Shared single grid + CRDT — each participant has a private grid.
 - Recording/playback; internet-scale / NAT traversal (assume LAN or trusted VPN).
 
-**Repo / toolchain.** A new `server/` Phoenix app (LiveView), scaffolded with
-`mix phx.new server`, built via `mix` and run by a `just server` recipe; the
-native side gains `src/net.odin`. The BEAM toolchain lives alongside Odin — the
-two build independently.
+**Repo / toolchain.** A new `server/` Phoenix app (LiveView + Ecto/SQLite; OTP
+app `mallorca_server`, since the `server` atom is reserved), scaffolded with
+`mix phx.new server --app mallorca_server --database sqlite3`, built via `mix`
+and run by a `just server` recipe; the native side gains `src/net.odin`. The
+BEAM toolchain lives alongside Odin — the two build independently.
 
 **Open questions.**
 1. Edit/VM write serialization: apply remote edits only between ticks (simplest)
