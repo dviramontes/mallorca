@@ -12,7 +12,7 @@ defmodule MallorcaServer.HostConn do
   use GenServer, restart: :temporary
   require Logger
 
-  alias MallorcaServer.Rooms
+  alias MallorcaServer.{Rooms, RoomServer}
 
   @proto_version 1
 
@@ -62,6 +62,10 @@ defmodule MallorcaServer.HostConn do
 
       {:ok, %{"t" => "ping"} = msg} ->
         send_line(state.socket, %{t: "pong", ts: Map.get(msg, "ts")})
+        state
+
+      {:ok, %{"t" => "snapshot"} = msg} ->
+        RoomServer.route_snapshot(state.room, msg)
         state
 
       {:ok, %{"t" => t}} ->

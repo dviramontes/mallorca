@@ -25,6 +25,16 @@ defmodule MallorcaServer.RoomServer do
     GenServer.call(Rooms.via(code), {:join, name, subscriber_pid})
   end
 
+  @doc "Forward a player's edit to the host (fire-and-forget)."
+  def edit(code, edit_map) do
+    GenServer.cast(Rooms.via(code), {:edit, edit_map})
+  end
+
+  @doc "Route an evaluated snapshot from the host to its player's LiveView."
+  def route_snapshot(code, snapshot) do
+    GenServer.cast(Rooms.via(code), {:snapshot, snapshot})
+  end
+
   @impl true
   def init(code) do
     {:ok, %{code: code, host: nil, players: %{}, bpm: 120, playing: false}}
@@ -51,6 +61,21 @@ defmodule MallorcaServer.RoomServer do
   end
 
   @impl true
+  def handle_cast({:edit, edit}, state) do
+    notify_host(state, edit)
+    {:noreply, state}
+  end
+
+  def handle_cast({:snapshot, snapshot}, state) do
+    case lv_for(state, Map.get(snapshot, "pid")) do
+      nil -> :ok
+      lv -> send(lv, {:snapshot, snapshot})
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     cond do
       pid == state.host ->
@@ -74,6 +99,10 @@ defmodule MallorcaServer.RoomServer do
 
   defp roster(state) do
     state.players |> Map.values() |> Enum.map(&%{id: &1.id, name: &1.name})
+  end
+
+  defp lv_for(state, id) do
+    Enum.find_value(state.players, fn {lv, p} -> if p.id == id, do: lv end)
   end
 
   defp notify_host(%{host: nil}, _msg), do: :ok

@@ -1,0 +1,54 @@
+defmodule MallorcaServerWeb.EditorLoopTest do
+  @moduledoc "Full round trip: LiveView edit -> host (TCP) -> snapshot -> LiveView render."
+  use MallorcaServerWeb.ConnCase, async: false
+
+  import Phoenix.LiveViewTest
+
+  alias MallorcaServer.Rooms
+
+  @port Application.compile_env(:mallorca_server, :host_port, 4001)
+
+  test "an edit reaches the host and its snapshot renders back", %{conn: conn} do
+    code = Rooms.gen_code()
+
+    # A fake host attaches to the room first.
+    {:ok, host} =
+      :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: :line, active: false], 1000)
+
+    send_line(host, %{t: "hello", room: code})
+    assert %{"t" => "welcome"} = recv_msg(host)
+
+    # A browser joins and opens the editor; the host is told about the player.
+    {:ok, lv, _html} = live(conn, ~p"/room/#{code}?name=alice")
+    assert %{"t" => "player_join", "pid" => pid} = recv_msg(host)
+
+    # Host streams an initial (blank) grid; the LiveView renders it.
+    send_line(host, %{t: "snapshot", pid: pid, w: 3, h: 1, grid: "...", tick: 0})
+    assert eventually(fn -> render(lv) =~ "tick 0" end)
+
+    # Typing a glyph sends an edit at the cursor (0,0) to the host...
+    render_hook(lv, "key", %{"key" => "D"})
+    assert %{"t" => "edit", "pid" => ^pid, "x" => 0, "y" => 0, "g" => "D"} = recv_msg(host)
+
+    # ...and the host's evaluated snapshot shows up in the editor.
+    send_line(host, %{t: "snapshot", pid: pid, w: 3, h: 1, grid: "D..", tick: 1})
+    assert eventually(fn -> render(lv) =~ "tick 1" end)
+
+    :gen_tcp.close(host)
+  end
+
+  defp send_line(sock, map), do: :ok = :gen_tcp.send(sock, [Jason.encode!(map), ?\n])
+
+  defp recv_msg(sock) do
+    {:ok, line} = :gen_tcp.recv(sock, 0, 1000)
+    Jason.decode!(line)
+  end
+
+  defp eventually(fun, tries \\ 50) do
+    cond do
+      fun.() -> true
+      tries <= 0 -> false
+      true -> Process.sleep(10) && eventually(fun, tries - 1)
+    end
+  end
+end
