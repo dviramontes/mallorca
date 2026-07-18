@@ -174,6 +174,9 @@ main :: proc() {
 		run_net_host(debug, room)
 		return
 	}
+	if room != "" {
+		fmt.eprintln("mallorca: --room has no effect without --net-host (running as local client)")
+	}
 
 	if app.file_name != "" {
 		data, read_err := os.read_entire_file_from_path(app.file_name, context.allocator)

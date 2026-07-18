@@ -94,10 +94,15 @@ Welcome_Player :: struct {
 // and host modes.
 @(private = "file")
 net_hello :: proc(c: ^Net_Conn, room := "") -> (assigned: string, players: []Welcome_Player, ok: bool) {
-	hello :=
-		room != "" \
-		? fmt.tprintf(`{"t":"hello","v":1,"role":"host","name":"mallorca-host","room":"%s"}`, room) \
-		: `{"t":"hello","v":1,"role":"host","name":"mallorca-host"}`
+	// Build via concatenation, not fmt: Odin's fmt treats '{' as a directive and
+	// would mangle the JSON braces.
+	hello := `{"t":"hello","v":1,"role":"host","name":"mallorca-host"}`
+	if room != "" {
+		hello = strings.concatenate(
+			{`{"t":"hello","v":1,"role":"host","name":"mallorca-host","room":"`, room, `"}`},
+			context.temp_allocator,
+		)
+	}
 	net_send_line(c, hello)
 	wline, wok := net_read_line(c)
 	if !wok {
