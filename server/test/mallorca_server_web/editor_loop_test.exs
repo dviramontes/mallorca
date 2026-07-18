@@ -37,6 +37,37 @@ defmodule MallorcaServerWeb.EditorLoopTest do
     :gen_tcp.close(host)
   end
 
+  test "a multi-line paste is forwarded to the host as one paste message", %{conn: conn} do
+    code = Rooms.gen_code()
+
+    {:ok, host} =
+      :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: :line, active: false], 1000)
+
+    send_line(host, %{t: "hello", room: code})
+    assert %{"t" => "welcome"} = recv_msg(host)
+
+    {:ok, lv, _html} = live(conn, ~p"/room/#{code}?name=alice")
+    assert %{"t" => "player_join", "pid" => pid} = recv_msg(host)
+
+    send_line(host, %{
+      t: "snapshot",
+      pid: pid,
+      w: 10,
+      h: 4,
+      grid: String.duplicate(".", 40),
+      tick: 0
+    })
+
+    assert eventually(fn -> render(lv) =~ "tick 0" end)
+
+    render_hook(lv, "paste", %{"text" => "..C\n..7"})
+
+    assert %{"t" => "paste", "pid" => ^pid, "x" => 0, "y" => 0, "cells" => "..C\n..7"} =
+             recv_msg(host)
+
+    :gen_tcp.close(host)
+  end
+
   defp send_line(sock, map), do: :ok = :gen_tcp.send(sock, [Jason.encode!(map), ?\n])
 
   defp recv_msg(sock) do

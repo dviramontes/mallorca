@@ -268,12 +268,13 @@ run_net_host :: proc(debug := false, want_room := "") {
 	// One flat struct covers player_join / player_leave / edit (json.unmarshal
 	// ignores absent fields).
 	Host_Msg :: struct {
-		t:    string,
-		pid:  string,
-		name: string,
-		x:    int,
-		y:    int,
-		g:    string,
+		t:     string,
+		pid:   string,
+		name:  string,
+		x:     int,
+		y:     int,
+		g:     string,
+		cells: string, // paste: '\n'-separated rows
 	}
 
 	// MIDI output is shared across all players (one device, one channel space).
@@ -340,6 +341,15 @@ run_net_host :: proc(debug := false, want_room := "") {
 				case "edit":
 					if sim, found := sims[m.pid]; found && len(m.g) > 0 {
 						orca.grid_set(sim.grid, m.x, m.y, m.g[0])
+					}
+				case "paste":
+					if sim, found := sims[m.pid]; found {
+						lines := strings.split(m.cells, "\n", context.temp_allocator)
+						for line, dy in lines {
+							for j in 0 ..< len(line) {
+								orca.grid_set(sim.grid, m.x + j, m.y + dy, line[j])
+							}
+						}
 					}
 				}
 			}
