@@ -14,8 +14,11 @@ defmodule MallorcaServer.Application do
        repos: Application.fetch_env!(:mallorca_server, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:mallorca_server, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: MallorcaServer.PubSub},
-      # Start a worker by calling: MallorcaServer.Worker.start_link(arg)
-      # {MallorcaServer.Worker, arg},
+      # Supervises per-connection handler tasks for the native host link.
+      {Task.Supervisor, name: MallorcaServer.HostConnSupervisor},
+      # TCP/NDJSON listener for the native host (docs/m6-network-protocol.md).
+      {MallorcaServer.HostListener,
+       port: Application.get_env(:mallorca_server, :host_port, 4001)},
       # Start to serve requests, typically the last entry
       MallorcaServerWeb.Endpoint
     ]
