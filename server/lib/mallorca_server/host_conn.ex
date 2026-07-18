@@ -88,7 +88,7 @@ defmodule MallorcaServer.HostConn do
       room: room,
       bpm: bpm,
       playing: playing,
-      players: players
+      players: Enum.map(players, &%{pid: &1.id, name: &1.name})
     })
 
     Logger.info("HostConn: host for room #{room} (#{length(players)} player(s))")

@@ -40,6 +40,26 @@ defmodule MallorcaServer.HostConnTest do
     :gen_tcp.close(sock)
   end
 
+  test "welcome lists players already in the room, keyed by pid" do
+    code = Rooms.gen_code()
+
+    # a player joins before any host attaches
+    player = spawn(fn -> Process.sleep(:infinity) end)
+    %{pid: id} = Rooms.join(code, "dasd", player)
+
+    # the host connects to that specific room
+    {:ok, sock} =
+      :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: :line, active: false], 1000)
+
+    send_line(sock, %{t: "hello", room: code})
+    welcome = recv_msg(sock)
+    assert %{"t" => "welcome", "room" => ^code} = welcome
+    assert [%{"pid" => ^id, "name" => "dasd"}] = welcome["players"]
+
+    :gen_tcp.close(sock)
+    Process.exit(player, :kill)
+  end
+
   defp send_line(sock, map), do: :ok = :gen_tcp.send(sock, [Jason.encode!(map), ?\n])
 
   defp recv_msg(sock) do

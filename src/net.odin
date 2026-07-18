@@ -83,29 +83,46 @@ index_byte :: proc(s: []u8, b: u8) -> int {
 	return -1
 }
 
-// Send hello and parse the welcome; returns the room code assigned by the
-// server. Shared by the spike and host modes.
 @(private = "file")
-net_hello :: proc(c: ^Net_Conn) -> (room: string, ok: bool) {
-	net_send_line(c, `{"t":"hello","v":1,"role":"host","name":"mallorca-host"}`)
+Welcome_Player :: struct {
+	pid:  string,
+	name: string,
+}
+
+// Send hello (optionally requesting a specific room) and parse the welcome;
+// returns the room code and any players already present. Shared by the spike
+// and host modes.
+@(private = "file")
+net_hello :: proc(c: ^Net_Conn, room := "") -> (assigned: string, players: []Welcome_Player, ok: bool) {
+	hello :=
+		room != "" \
+		? fmt.tprintf(`{"t":"hello","v":1,"role":"host","name":"mallorca-host","room":"%s"}`, room) \
+		: `{"t":"hello","v":1,"role":"host","name":"mallorca-host"}`
+	net_send_line(c, hello)
 	wline, wok := net_read_line(c)
 	if !wok {
 		fmt.eprintln("net: no welcome (server closed?)")
-		return "", false
+		return "", nil, false
 	}
 	Welcome :: struct {
-		t:       string,
 		room:    string,
 		bpm:     int,
 		playing: bool,
+		players: []Welcome_Player,
 	}
 	w: Welcome
 	if err := json.unmarshal(transmute([]u8)wline, &w); err != nil {
 		fmt.eprintfln("net: bad welcome %q: %v", wline, err)
-		return "", false
+		return "", nil, false
 	}
-	fmt.printfln("net: <- welcome  room=%s bpm=%d playing=%v", w.room, w.bpm, w.playing)
-	return w.room, true
+	fmt.printfln(
+		"net: <- welcome  room=%s bpm=%d playing=%v players=%d",
+		w.room,
+		w.bpm,
+		w.playing,
+		len(w.players),
+	)
+	return w.room, w.players, true
 }
 
 // run_net_spike proves the Odin <-> Phoenix link end to end: dial, hello ->
@@ -119,7 +136,7 @@ run_net_spike :: proc() {
 	}
 	defer net_close(&c)
 
-	if _, hok := net_hello(&c); !hok {
+	if _, _, hok := net_hello(&c); !hok {
 		os.exit(1)
 	}
 
@@ -218,7 +235,7 @@ host_free_sim :: proc(sim: ^Host_Sim) {
 // applies remote edits, ticks every grid on the host clock, and streams the
 // evaluated grid back for each player. Headless stand-in for the app's host
 // loop (no window, no MIDI yet). `--net-host`.
-run_net_host :: proc(debug := false) {
+run_net_host :: proc(debug := false, want_room := "") {
 	fmt.printfln("net-host: dialing 127.0.0.1:%d ...", NET_DEFAULT_PORT)
 	c, ok := net_dial()
 	if !ok {
@@ -226,10 +243,11 @@ run_net_host :: proc(debug := false) {
 	}
 	defer net_close(&c)
 
-	room, hok := net_hello(&c)
+	assigned, players, hok := net_hello(&c, want_room)
 	if !hok {
 		os.exit(1)
 	}
+	room := assigned
 	fmt.printfln("net-host: hosting room %s", room)
 	fmt.printfln("net-host: open http://localhost:4000/room/%s in a browser", room)
 	fmt.println("net-host: simulating; Ctrl-C to quit ...")
@@ -264,6 +282,18 @@ run_net_host :: proc(debug := false) {
 		fmt.printfln("net-host: MIDI ready (hardware destination: %v)", midi.has_dest)
 	} else {
 		fmt.println("net-host: no MIDI output available")
+	}
+
+	// Seed a grid for players who were already in the room before we attached.
+	for p in players {
+		if p.pid != "" && p.pid not_in sims {
+			sim := new(Host_Sim)
+			sim.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
+			sim.marks = orca.make_marks(sim.grid)
+			sims[strings.clone(p.pid)] = sim
+			fmt.printfln("net-host: + player %s (%s) [existing]", p.name, p.pid)
+			host_send_snapshot(&c, p.pid, sim)
+		}
 	}
 
 	net.set_blocking(c.sock, false)
