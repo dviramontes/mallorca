@@ -17,6 +17,7 @@ independent from rendering and file I/O.
 - Run or single-step the Orca simulation at four frames per beat
 - Orca-c-compatible operators, per-cell marks, and event generation
 - Live MIDI output via CoreMIDI, with tick-accurate note durations
+- Network mode: host a room natively while others join and jam from a browser
 - Visual highlighting for inputs, outputs, locked cells, and haste inputs
 - Selection with copy/cut/paste, undo, interactive grid resize, and BPM control
 - Headless core package with tests independent of the graphical application
@@ -33,6 +34,7 @@ the project roadmap.
 - A recent [Odin compiler](https://odin-lang.org/docs/install/)
 - [just](https://github.com/casey/just)
 - Git
+- [Elixir](https://elixir-lang.org/install.html) — only for network mode (the `server/` Phoenix app)
 
 Make sure `odin` and `just` are available on your `PATH`.
 
@@ -55,6 +57,42 @@ just run
 
 When a blank grid is saved for the first time, Mallorca writes it to
 `untitled.orca` in the current directory.
+
+## Quickstart: hosting and joining a room
+
+Mallorca has a network mode (see [PLAN.md](PLAN.md), M6): one machine runs the
+native app as the **host** — it owns the clock and MIDI output and simulates
+every player's grid — while other people join from a browser and live-code
+together in the same room.
+
+**1. Start the server** — a Phoenix app in [`server/`](server/) (needs Elixir):
+
+```sh
+just server-setup   # once: fetch dependencies and create the SQLite database
+just server         # serves http://localhost:4000
+```
+
+**2. Host a room** — the native app, in another terminal (run `just setup`
+first if you haven't):
+
+```sh
+just host           # opens the editor window and prints a room URL
+just host MYROOM    # …or host a specific room code
+```
+
+The host window edits its own grid and shows a small square that is **green
+when connected** to the server (red when not). It also simulates and sounds
+every remote player, so keep it running and press `Space` to play.
+
+**3. Join from a browser**
+
+Open the room URL the host printed — e.g. `http://localhost:4000/room/MYROOM` —
+pick a name, and start typing an Orca pattern. Your grid runs on the host and
+plays through its MIDI output. The dashboard at `http://localhost:4000/admin`
+(default `admin` / `mallorca`) shows every room's grids live.
+
+> Network mode assumes a LAN or trusted network, and only the host machine
+> emits MIDI. For a display-less host, use `just run "" --net-host --headless`.
 
 ## Controls
 
@@ -128,6 +166,8 @@ examples/        example .orca grids
 patches/         local patches applied to the pinned karl2d revision
 src/core/        grid, marks, events, and simulation engine
 src/main.odin    window, editor, clock, rendering, and file I/O
+src/net.odin     network host: connects to the server, simulates players
+server/          Phoenix server for network mode (rooms, admin, LiveView)
 Justfile         setup, build, test, and run commands
 PLAN.md          architecture and roadmap
 ```
