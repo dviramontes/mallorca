@@ -261,6 +261,11 @@ app `mallorca_server`, since the `server` atom is reserved), scaffolded with
 and run by a `just server` recipe; the native side gains `src/net.odin`. The
 BEAM toolchain lives alongside Odin — the two build independently.
 
+**Wire protocol.** The full message schema, transport/framing, flows, and the
+SQLite persistence mapping live in
+[docs/m6-network-protocol.md](docs/m6-network-protocol.md) — the contract both
+sides implement.
+
 **Open questions.**
 1. Edit/VM write serialization: apply remote edits only between ticks (simplest)
    vs. a locked queue drained each frame.
