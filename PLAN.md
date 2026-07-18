@@ -395,6 +395,44 @@ join/leave notifications.
 see the others' grids and cursors live in the LiveView, all sounding through the
 host.
 
+### M9 — Connection status indicator (native client)
+
+An at-a-glance indicator on the native Odin client showing whether it is
+connected to the server: a filled square, **green when connected, red when
+disconnected**. This is the native counterpart to the LiveView's "host
+online/offline" badge from M6.
+
+**Placement.** A small square in the status bar (or a window corner), drawn with
+karl2d as a filled rectangle — no text needed, the color carries the state.
+Sized to about one cell and aligned with the existing status bar.
+
+**States.**
+- **Green** — the host↔server connection is live (last `pong` within timeout).
+- **Red** — no connection: never dialed, the socket dropped, or offline.
+- Optional dim/amber while dialing or reconnecting.
+
+**Connection tracking.** The indicator reads a single field on `App`
+(e.g. `net_status: enum { Disconnected, Connecting, Connected }`) that the
+network layer (`net.odin`) updates: set on dial/`welcome`, cleared when the
+socket closes or a heartbeat deadline passes (no `ping`/`pong` within N seconds,
+per the protocol doc §3) so a dead link flips to red without waiting on a socket
+error.
+
+**Dependency.** Assumes the native client maintains a live server connection
+from its window — i.e. the network host is folded into the GUI app rather than
+the headless `--net-host` stand-in (a follow-up flagged in M6). Until then the
+square reflects the app's own connection, defaulting to red when networking is
+off.
+
+**Implementation notes.**
+- Add `net_status` to `App`; the render pass draws the square from it, reusing
+  the status-bar layout and green/red color constants.
+- The network read loop and the heartbeat deadline both update `net_status`.
+- Purely a host concern in `main.odin`; `core` is untouched.
+
+**Deliverable:** the native client shows a green square while connected to the
+server and a red square when the connection is down or absent.
+
 ## Justfile commands
 
 - `just setup` — clone karl2d into `karl2d/`, pinned to a known commit
