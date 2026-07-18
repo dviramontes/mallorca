@@ -147,12 +147,29 @@ main :: proc() {
 	// Args: an optional .orca file path and an optional --debug flag, in any
 	// order. The first non-flag argument is the file.
 	debug := false
+	net_spike := false
+	net_host := false
 	for arg in os.args[1:] {
 		if arg == "--debug" {
 			debug = true
+		} else if arg == "--net-spike" {
+			net_spike = true
+		} else if arg == "--net-host" {
+			net_host = true
 		} else if arg != "" && app.file_name == "" {
 			app.file_name = arg
 		}
+	}
+
+	// Network modes (docs/m6-network-protocol.md) run headless instead of
+	// opening the window.
+	if net_spike {
+		run_net_spike()
+		return
+	}
+	if net_host {
+		run_net_host()
+		return
 	}
 
 	if app.file_name != "" {

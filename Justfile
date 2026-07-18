@@ -71,6 +71,14 @@ bundle:
 test:
     odin test src/core
 
+# fetch server deps and create the SQLite dev database (run once after setup)
+server-setup:
+    cd server && mix deps.get && mix ecto.create
+
+# run the Phoenix server (M6 remote multiplayer) at http://localhost:4000
+server:
+    cd server && mix phx.server
+
 # remove build artifacts
 clean:
     rm -rf bin
