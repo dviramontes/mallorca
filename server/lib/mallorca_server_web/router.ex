@@ -17,7 +17,8 @@ defmodule MallorcaServerWeb.Router do
   scope "/", MallorcaServerWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", HomeLive
+    live "/room/:code", RoomLive
   end
 
   # Other scopes may use custom stacks.

@@ -14,9 +14,12 @@ defmodule MallorcaServer.Application do
        repos: Application.fetch_env!(:mallorca_server, :ecto_repos), skip: skip_migrations?()},
       {DNSCluster, query: Application.get_env(:mallorca_server, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: MallorcaServer.PubSub},
-      # Supervises per-connection handler tasks for the native host link.
-      {Task.Supervisor, name: MallorcaServer.HostConnSupervisor},
-      # TCP/NDJSON listener for the native host (docs/m6-network-protocol.md).
+      # Room lookup (code -> RoomServer) and the room process supervisor.
+      {Registry, keys: :unique, name: MallorcaServer.RoomRegistry},
+      {DynamicSupervisor, name: MallorcaServer.RoomSupervisor, strategy: :one_for_one},
+      # Per-connection host handlers + the TCP/NDJSON listener for the native
+      # host (docs/m6-network-protocol.md).
+      {DynamicSupervisor, name: MallorcaServer.HostConnSupervisor, strategy: :one_for_one},
       {MallorcaServer.HostListener,
        port: Application.get_env(:mallorca_server, :host_port, 4001)},
       # Start to serve requests, typically the last entry

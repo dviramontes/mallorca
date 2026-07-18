@@ -82,6 +82,31 @@ index_byte :: proc(s: []u8, b: u8) -> int {
 	return -1
 }
 
+// Send hello and parse the welcome; returns the room code assigned by the
+// server. Shared by the spike and host modes.
+@(private = "file")
+net_hello :: proc(c: ^Net_Conn) -> (room: string, ok: bool) {
+	net_send_line(c, `{"t":"hello","v":1,"role":"host","name":"mallorca-host"}`)
+	wline, wok := net_read_line(c)
+	if !wok {
+		fmt.eprintln("net: no welcome (server closed?)")
+		return "", false
+	}
+	Welcome :: struct {
+		t:       string,
+		room:    string,
+		bpm:     int,
+		playing: bool,
+	}
+	w: Welcome
+	if err := json.unmarshal(transmute([]u8)wline, &w); err != nil {
+		fmt.eprintfln("net: bad welcome %q: %v", wline, err)
+		return "", false
+	}
+	fmt.printfln("net: <- welcome  room=%s bpm=%d playing=%v", w.room, w.bpm, w.playing)
+	return w.room, true
+}
+
 // run_net_spike proves the Odin <-> Phoenix link end to end: dial, hello ->
 // welcome, ping -> pong (with a round-trip time), then exit. Invoked with the
 // `--net-spike` flag instead of opening the window.
@@ -93,25 +118,9 @@ run_net_spike :: proc() {
 	}
 	defer net_close(&c)
 
-	// hello -> welcome
-	net_send_line(&c, `{"t":"hello","v":1,"role":"host","name":"mallorca-host"}`)
-	wline, wok := net_read_line(&c)
-	if !wok {
-		fmt.eprintln("net-spike: no welcome (server closed?)")
+	if _, hok := net_hello(&c); !hok {
 		os.exit(1)
 	}
-	Welcome :: struct {
-		t:       string,
-		room:    string,
-		bpm:     int,
-		playing: bool,
-	}
-	w: Welcome
-	if err := json.unmarshal(transmute([]u8)wline, &w); err != nil {
-		fmt.eprintfln("net-spike: bad welcome %q: %v", wline, err)
-		os.exit(1)
-	}
-	fmt.printfln("net-spike: <- %s  room=%s bpm=%d playing=%v", w.t, w.room, w.bpm, w.playing)
 
 	// ping -> pong, timed locally
 	start := time.tick_now()
@@ -130,4 +139,33 @@ run_net_spike :: proc() {
 	fmt.printfln("net-spike: <- %s  rtt=%.3fms", p.t, rtt_ms)
 
 	fmt.println("net-spike: OK")
+}
+
+// run_net_host connects as the room host and stays connected, printing player
+// events (player_join / player_leave) as browsers come and go. A stand-in for
+// the real host loop until the app is wired to the network. `--net-host`.
+run_net_host :: proc() {
+	fmt.printfln("net-host: dialing 127.0.0.1:%d ...", NET_DEFAULT_PORT)
+	c, ok := net_dial()
+	if !ok {
+		os.exit(1)
+	}
+	defer net_close(&c)
+
+	room, hok := net_hello(&c)
+	if !hok {
+		os.exit(1)
+	}
+	fmt.printfln("net-host: hosting room %s", room)
+	fmt.printfln("net-host: open http://localhost:4000/room/%s in a browser", room)
+	fmt.println("net-host: waiting for player events (Ctrl-C to quit) ...")
+
+	for {
+		line, lok := net_read_line(&c)
+		if !lok {
+			fmt.println("net-host: server closed the connection")
+			break
+		}
+		fmt.printfln("net-host: <- %s", line)
+	}
 }

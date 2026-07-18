@@ -20,6 +20,10 @@ config :mallorca_server, MallorcaServerWeb.Endpoint,
 # Print only warnings and errors during test
 config :logger, level: :warning
 
+# Host TCP listener on a distinct port in tests, so it never clashes with a
+# `just server` dev instance bound to the default 4001.
+config :mallorca_server, host_port: 4011
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 
