@@ -64,8 +64,17 @@ defmodule MallorcaServerWeb.RoomLive do
   end
 
   @impl true
-  def handle_event("key", %{"key" => key}, socket) do
-    {:noreply, handle_key(socket, key)}
+  def handle_event("key", params, socket) do
+    # Let Cmd/Ctrl chords (paste, copy, …) through without typing a glyph.
+    if params["metaKey"] || params["ctrlKey"] do
+      {:noreply, socket}
+    else
+      {:noreply, handle_key(socket, params["key"])}
+    end
+  end
+
+  def handle_event("paste", %{"text" => text}, socket) do
+    {:noreply, apply_paste(socket, text)}
   end
 
   # No grid yet (host offline) — ignore edits/motion.
@@ -119,11 +128,53 @@ defmodule MallorcaServerWeb.RoomLive do
   defp glyph?(<<c>>) when c in 33..126, do: true
   defp glyph?(_), do: false
 
+  # Paste a multi-line block at the cursor: overlay locally and send the host a
+  # single `paste` message (reconciled by the next snapshot).
+  defp apply_paste(%{assigns: %{rows: []}} = socket, _text), do: socket
+
+  defp apply_paste(socket, text) do
+    %{code: code, pid: pid, cx: x, cy: y, gw: gw, gh: gh, rows: rows} = socket.assigns
+
+    lines =
+      text |> String.replace("\r\n", "\n") |> String.trim_trailing("\n") |> String.split("\n")
+
+    if pid do
+      RoomServer.edit(code, %{t: "paste", pid: pid, x: x, y: y, cells: Enum.join(lines, "\n")})
+    end
+
+    assign(socket, rows: overlay_lines(rows, lines, x, y, gw, gh))
+  end
+
+  defp overlay_lines(rows, lines, x0, y0, gw, gh) do
+    lines
+    |> Enum.with_index()
+    |> Enum.reduce(rows, fn {line, i}, acc ->
+      y = y0 + i
+      if y >= 0 and y < gh, do: List.update_at(acc, y, &put_line(&1, line, x0, gw)), else: acc
+    end)
+  end
+
+  defp put_line(row, line, x0, gw) do
+    line
+    |> String.graphemes()
+    |> Enum.with_index()
+    |> Enum.reduce(row, fn {ch, j}, r ->
+      x = x0 + j
+
+      if x >= 0 and x < gw and byte_size(ch) == 1 do
+        <<pre::binary-size(^x), _::binary-size(1), rest::binary>> = r
+        pre <> ch <> rest
+      else
+        r
+      end
+    end)
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash}>
-      <div class="space-y-4 py-6" phx-window-keydown="key">
+      <div id="editor" phx-hook="Paste" class="space-y-4 py-6" phx-window-keydown="key">
         <div class="flex items-center justify-between max-w-3xl mx-auto">
           <h1 class="text-xl font-bold">Room <span class="font-mono">{@code}</span></h1>
           <span class={["badge", (@host_online && "badge-success") || "badge-ghost"]}>

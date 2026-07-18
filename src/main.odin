@@ -149,6 +149,7 @@ main :: proc() {
 	debug := false
 	net_spike := false
 	net_host := false
+	room := ""
 	for arg in os.args[1:] {
 		if arg == "--debug" {
 			debug = true
@@ -156,6 +157,8 @@ main :: proc() {
 			net_spike = true
 		} else if arg == "--net-host" {
 			net_host = true
+		} else if strings.has_prefix(arg, "--room=") {
+			room = arg[len("--room="):]
 		} else if arg != "" && app.file_name == "" {
 			app.file_name = arg
 		}
@@ -168,8 +171,11 @@ main :: proc() {
 		return
 	}
 	if net_host {
-		run_net_host(debug)
+		run_net_host(debug, room)
 		return
+	}
+	if room != "" {
+		fmt.eprintln("mallorca: --room has no effect without --net-host (running as local client)")
 	}
 
 	if app.file_name != "" {

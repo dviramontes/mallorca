@@ -11,6 +11,10 @@ config :mallorca_server,
   ecto_repos: [MallorcaServer.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+# Basic-auth credentials for the /admin dashboard. Override in prod via
+# runtime.exs / environment variables.
+config :mallorca_server, :admin_auth, username: "admin", password: "mallorca"
+
 # Configure the endpoint
 config :mallorca_server, MallorcaServerWeb.Endpoint,
   url: [host: "localhost"],

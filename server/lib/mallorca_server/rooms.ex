@@ -38,6 +38,15 @@ defmodule MallorcaServer.Rooms do
     RoomServer.attach_host(code, host_pid)
   end
 
+  @doc "Info for every active room (for the admin dashboard)."
+  def list_rooms do
+    @registry
+    |> Registry.select([{{:"$1", :_, :_}, [], [:"$1"]}])
+    |> Enum.map(&RoomServer.info/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(& &1.code)
+  end
+
   @doc "Generate a 6-char room code from an unambiguous base32 alphabet."
   def gen_code do
     alphabet = ~c"23456789ABCDEFGHJKLMNPQRSTUVWXYZ"

@@ -26,10 +26,35 @@ import {hooks as colocatedHooks} from "phoenix-colocated/mallorca_server"
 import topbar from "../vendor/topbar"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
+
+// Capture clipboard paste and forward the text to the LiveView (multi-line
+// Orca blocks). Single-character typing still goes through phx-window-keydown.
+const Hooks = {
+  Paste: {
+    mounted() {
+      this.handler = (e) => {
+        const text = (e.clipboardData || window.clipboardData).getData("text")
+        if (text) {
+          e.preventDefault()
+          this.pushEvent("paste", {text})
+        }
+      }
+      window.addEventListener("paste", this.handler)
+    },
+    destroyed() {
+      window.removeEventListener("paste", this.handler)
+    },
+  },
+}
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, ...Hooks},
+  // Surface modifier keys so Cmd/Ctrl chords (paste, copy) don't type a glyph.
+  metadata: {
+    keydown: (e) => ({metaKey: e.metaKey, ctrlKey: e.ctrlKey}),
+  },
 })
 
 // Show progress bar on live navigation and form submits

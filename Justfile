@@ -28,6 +28,12 @@ run file="" *flags="":
     mkdir -p bin
     odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" {{flags}}
 
+# run as the network host (M6 remote play); needs `just server` running.
+# `just host` gets a server-assigned room; `just host CODE` joins a specific one.
+host room="" *flags="":
+    mkdir -p bin
+    odin run src -debug {{defines}} -out:bin/mallorca -- --net-host --room={{room}} {{flags}}
+
 # debug build
 build:
     mkdir -p bin
