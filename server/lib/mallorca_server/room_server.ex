@@ -35,9 +35,16 @@ defmodule MallorcaServer.RoomServer do
     GenServer.cast(Rooms.via(code), {:snapshot, snapshot})
   end
 
+  @doc "A read-only summary of room state for the admin dashboard (nil if gone)."
+  def info(code) do
+    GenServer.call(Rooms.via(code), :info)
+  catch
+    :exit, _ -> nil
+  end
+
   @impl true
   def init(code) do
-    {:ok, %{code: code, host: nil, players: %{}, bpm: 120, playing: false}}
+    {:ok, %{code: code, host: nil, players: %{}, snapshots: %{}, bpm: 120, playing: false}}
   end
 
   @impl true
@@ -60,6 +67,17 @@ defmodule MallorcaServer.RoomServer do
     {:reply, %{pid: id}, state}
   end
 
+  def handle_call(:info, _from, state) do
+    info = %{
+      code: state.code,
+      host_online: state.host != nil,
+      players: roster(state),
+      snapshots: state.snapshots
+    }
+
+    {:reply, info, state}
+  end
+
   @impl true
   def handle_cast({:edit, edit}, state) do
     notify_host(state, edit)
@@ -67,12 +85,15 @@ defmodule MallorcaServer.RoomServer do
   end
 
   def handle_cast({:snapshot, snapshot}, state) do
-    case lv_for(state, Map.get(snapshot, "pid")) do
+    pid = Map.get(snapshot, "pid")
+
+    case lv_for(state, pid) do
       nil -> :ok
       lv -> send(lv, {:snapshot, snapshot})
     end
 
-    {:noreply, state}
+    snapshots = if pid, do: Map.put(state.snapshots, pid, snapshot), else: state.snapshots
+    {:noreply, %{state | snapshots: snapshots}}
   end
 
   @impl true
@@ -86,7 +107,7 @@ defmodule MallorcaServer.RoomServer do
 
       Map.has_key?(state.players, pid) ->
         {player, players} = Map.pop(state.players, pid)
-        state = %{state | players: players}
+        state = %{state | players: players, snapshots: Map.delete(state.snapshots, player.id)}
         Logger.info("room #{state.code}: - #{player.name} (#{player.id})")
         notify_host(state, %{t: "player_leave", pid: player.id})
         broadcast_roster(state)

@@ -14,11 +14,30 @@ defmodule MallorcaServerWeb.Router do
     plug :accepts, ["json"]
   end
 
+  pipeline :admin_auth do
+    plug :admin_basic_auth
+  end
+
+  defp admin_basic_auth(conn, _opts) do
+    cfg = Application.get_env(:mallorca_server, :admin_auth, [])
+
+    Plug.BasicAuth.basic_auth(conn,
+      username: cfg[:username] || "admin",
+      password: cfg[:password] || "mallorca"
+    )
+  end
+
   scope "/", MallorcaServerWeb do
     pipe_through :browser
 
     live "/", HomeLive
     live "/room/:code", RoomLive
+  end
+
+  scope "/admin", MallorcaServerWeb do
+    pipe_through [:browser, :admin_auth]
+
+    live "/", AdminLive
   end
 
   # Other scopes may use custom stacks.
