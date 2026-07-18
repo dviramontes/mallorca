@@ -153,13 +153,124 @@ Each milestone is runnable end to end.
   - select and retain a CoreMIDI destination;
   - MIDI clock (24 PPQN), if added, is a separate feature from VM events.
 
-### M6 — Modal (vim-style) editing  ← current
+### M6 — Server + remote play (host-authoritative)  ← current
+
+The native mallorca is the **only** native client and the single **host**: it
+owns the MIDI rig, the clock, and — the pivotal decision — the Orca VM for
+*every* participant. All other players are **remote browsers** live-coding Orca
+in a Phoenix LiveView editor; they never run a native VM. As with every prior
+milestone, `core` is untouched — this is a host concern in `main.odin` plus a
+new server.
+
+**M6 does not depend on M7.** M6 concerns grid *state*, transport, and a new
+`net.odin`; M7 (modal editing) only reshapes the native `handle_input` path.
+They touch disjoint regions of `main.odin` and can be sequenced either way.
+
+**Who runs the VM (the load-bearing decision).** Remote players are browsers, so
+they cannot run the Odin VM. Rather than reimplement the sim in Elixir (a second
+VM to keep conformant with `core`) or embed `core` as a NIF, the **host
+simulates every player's grid** — one VM instance per participant, all on the
+host's single clock. The consequences are mostly *simplifying*:
+- **No cross-machine clock sync, and no timed events on the wire.** Remote
+  players send *edits* (untimed, latency-tolerant); the host derives all MIDI
+  from grid state on its own clock. The look-ahead / Ableton-Link machinery an
+  earlier draft of this milestone needed simply disappears — a late edit lands a
+  tick later, which is exactly how livecoding already behaves.
+- **MIDI never crosses the network** — it is produced and consumed entirely on
+  the host (the M5 CoreMIDI scheduler, unchanged in spirit).
+- The **server is a pure relay + UI + presence**; it does not run Orca.
+
+Alternative kept on file: expose `core` as a C-ABI shared library and drive it
+from Elixir (NIF/port) so the *server* simulates. Feasible because `core` is
+pure and I/O-free, but it splits the clock across machines and reintroduces the
+timing problem — worth revisiting only if the host's per-player CPU cost ever
+mattered (it won't, for a handful of small grids).
+
+```diagram
+                                          browser player B ─┐
+   ╭───────────────────────────╮   ╭──────────────────────┴─╮
+   │ HOST — native mallorca     │   │ Phoenix server         │◀─ browser player C
+   │ • VM per player (its own + │◀─▶│ • LiveView Orca editor │
+   │   one per remote player)   │   │ • presence / relay     │
+   │ • clock master             │   │ • admin dashboard      │
+   │ • CoreMIDI → sound         │   │   (no Orca VM)          │
+   ╰───────────────────────────╯   ╰────────────────────────╯
+       edits ▲          ▼ evaluated grid + marks
+```
+
+**The remote edit loop** (per remote player):
+1. Player types in the LiveView editor → an edit (glyph/cursor/clear) → server →
+   host.
+2. Host applies the edit to that player's grid. The host is the **single
+   writer**: the VM also mutates the grid every tick, so remote edits and VM
+   writes must serialize on the host (apply edits between ticks) to avoid races.
+3. Host ticks every grid on its clock, producing events → emits MIDI → sound.
+4. Host streams the evaluated grid + marks back → server → that player's
+   LiveView, which renders the running pattern (bangs, playhead, locks).
+
+The browser shows the host's authoritative grid with **optimistic local echo**
+of the last keystroke so typing feels instant; the host's next snapshot
+reconciles it.
+
+**LiveView Orca editor component.**
+- Renders a grid of glyphs with cursor, ruler markers, and mark highlighting —
+  the browser twin of mallorca's renderer.
+- Captures keystrokes (glyph entry, arrow/cursor movement, backspace/clear) and
+  ships edits; transport keys (play/pause, BPM) route to the host as requests.
+- ~8 fps state refresh (4 frames/beat @ 120 BPM) is trivial bandwidth for the
+  small grids in play, well within a channel's budget.
+- Modal editing (M7) is a *native*-client affordance; the browser editor starts
+  with plain glyph entry, revisited only if remote players want it.
+
+**Server / admin (Phoenix LiveView).**
+- Room join by code + display name; live presence list.
+- Transport controls (play/pause/BPM) as requests to the host, which owns tempo.
+- Per-player live grid view (read-only "code streaming") on the dashboard.
+- Monitoring: edit rate, round-trip latency, connected players; auth on admin.
+
+**Native host (`src/net.odin`, new).** Connects to the server as the host,
+registers its grids, receives remote edits and transport requests, streams
+evaluated grids back, and surfaces the room roster in the status bar.
+Platform-guarded like `midi.odin`.
+
+**Failure handling.**
+- Remote player disconnect → host drops that player's grid and flushes its
+  sustained notes; dashboard marks them gone.
+- Host disconnect → everything goes silent (the host is the only sound source);
+  players keep editing against a stalled clock until it returns.
+- Server restart → players rejoin by room code; the host re-registers its grids.
+
+**Deliberately deferred / out of scope.**
+- Players seeing each other's grids/cursors → **M8**.
+- Server-side or browser-side VM — the host simulates everything.
+- Additional native peers — there is exactly one native client (the host).
+- Shared single grid + CRDT — each participant has a private grid.
+- Recording/playback; internet-scale / NAT traversal (assume LAN or trusted VPN).
+
+**Repo / toolchain.** A new `server/` Phoenix app (LiveView), scaffolded with
+`mix phx.new server`, built via `mix` and run by a `just server` recipe; the
+native side gains `src/net.odin`. The BEAM toolchain lives alongside Odin — the
+two build independently.
+
+**Open questions.**
+1. Edit/VM write serialization: apply remote edits only between ticks (simplest)
+   vs. a locked queue drained each frame.
+2. Optimistic-echo reconciliation when the VM overwrites a cell the player just
+   typed (distinguish player-input cells from operator-output cells).
+3. Transport authority: host-owned tempo only, or may the dashboard drive it?
+4. Grid streaming: whole-grid snapshots on change (start here) vs. deltas.
+
+**Deliverable:** a remote browser player joins by room code, live-codes an Orca
+pattern in the LiveView editor, and hears it played by the native host in sync
+with the host's own grid; the dashboard shows every grid live.
+
+### M7 — Modal (vim-style) editing
 
 A deliberate departure from Orca: layer a modal, vim-inspired editing model
 over the grid. Orca's native model is "the keyboard always types glyphs"; vim's
 Normal mode reuses the letter keys as commands, so the two cannot coexist in
 one mode. Nearly every vim motion/operator letter (`h j k l w b d y p r`) is
-also a valid Orca operator, which forces the separation. M6 resolves this with
+also a valid Orca operator, which forces the separation. M7 resolves this with
 explicit modes and adopts only the vim idioms that map cleanly onto a
 fixed-size glyph grid.
 
@@ -242,6 +353,33 @@ glyph typing still works out of the box on launch.
 2. Launch mode: **Insert** — classic typing works out of the box; `Esc` opens
    the vim layer.
 3. Redo: **both** `Ctrl+R` (vim) and `Cmd+Shift+Z` (mac).
+
+### M8 — Player awareness & shared cursors
+
+Builds on M6's relay so players *see each other perform*, not just the host. M8
+depends on M6 but not the reverse, and is independently demoable — which is why
+it is its own milestone: it keeps M6's go/no-go question (does remote
+live-coding sound in time through the host?) uncluttered by the social layer.
+
+**Grid broadcast.** Each player's evaluated grid streams to every other player
+in the room (opt-in per room), so everyone watches everyone's pattern run — the
+shared-jam view, not just the admin dashboard's.
+
+**Shared cursors.** Every player's cursor position (and selection, later)
+broadcasts through Phoenix Presence and renders as a labeled, per-player-colored
+remote cursor — in each LiveView editor *and* in the native host's view.
+
+**Presence-rich UI.** Playing vs. spectating, per-player activity/status,
+join/leave notifications.
+
+**Deliberately deferred.**
+- Real-time collaborative editing of a *single shared* grid (still N private
+  grids).
+- Voice/chat and spectator replay.
+
+**Deliverable:** two remote players plus the host each edit their own grid and
+see the others' grids and cursors live in the LiveView, all sounding through the
+host.
 
 ## Justfile commands
 
