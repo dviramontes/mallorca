@@ -4,12 +4,16 @@ Mallorca is a native [Odin](https://odin-lang.org/) port of
 [Orca](https://github.com/hundredrabbits/Orca), the esoteric livecoding
 sequencer. It uses [karl2d](https://github.com/karl-zylinski/karl2d) for a
 small, resizable graphical editor while keeping the simulation engine
-independent from rendering and file I/O.
+independent from rendering and file I/O. It also has a network mode for collaborative 
+jamming: one machine runs the native app as the **host** — owning the clock and MIDI output — while other
+people join a shared room from a browser and live-code together. See
+[Quickstart: hosting and joining a room](#quickstart-hosting-and-joining-a-room).
 
 > [!NOTE]
 > Mallorca is a work in progress and currently runs on macOS. The simulation
 > sends its MIDI events out over CoreMIDI (note, control change, and pitch
-> bend); OSC and UDP events are still produced but not yet delivered.
+> bend); OSC and UDP events are still produced but not yet delivered. Network
+> mode assumes a LAN or trusted network, and only the host machine emits MIDI.
 
 ## Features
 
