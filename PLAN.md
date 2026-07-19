@@ -433,6 +433,76 @@ off.
 **Deliverable:** the native client shows a green square while connected to the
 server and a red square when the connection is down or absent.
 
+### M10 — Hover mode: operator name readout
+
+A discoverability affordance shared by both clients: when the cursor rests on an
+operator cell, show that operator's **full name** in the lower-right corner, set
+in *italics*. Orca's glyphs are terse by design (`D` is delay, `U` is euclid);
+surfacing the name on hover teaches the language without a separate reference and
+without cluttering the grid. Like M8/M9 this is a presentation concern only —
+`core` is untouched; both the native host (`main.odin`) and the LiveView editor
+(`room_live.ex`) render the readout from the glyph under the cursor.
+
+**What "cursor" means per client.**
+- **Native** — the mouse pointer. Map the pointer's window position to a grid
+  cell (inverse of the cell-rect layout the renderer already uses) and read that
+  glyph; if the pointer is outside the grid, show nothing. The keyboard edit
+  cursor is a reasonable fallback, but the feature is framed as *hover*, so the
+  mouse pointer is primary.
+- **Web** — the hovered cell. Each glyph is already its own `<span>` in
+  `room_live.ex`; a `:hover` (CSS) or `phx-mouseover` on the span drives the
+  readout. No round-trip to the host is needed — the name lookup is static and
+  purely client-side.
+
+**Operator name table (the one new shared-ish piece).** Neither side has a
+glyph→name map today; both derive it from the same list. The names mirror the
+`op_*` procs in `src/core/sim.odin` so the two stay in step:
+
+| Glyph | Name | Glyph | Name |
+| --- | --- | --- | --- |
+| `A` | add | `O` | offset (read) |
+| `B` | subtract | `P` | push |
+| `C` | clock | `Q` | query |
+| `D` | delay | `R` | random |
+| `E`/`N`/`S`/`W` | move (east/north/south/west) | `T` | track |
+| `F` | if | `U` | euclid |
+| `G` | generator | `V` | variable |
+| `H` | halt | `X` | teleport |
+| `I` | increment | `Y` | yump |
+| `J` | jump | `Z` | lerp |
+| `K` | konkat | `*` | bang |
+| `L` | lesser | `#` | comment |
+| `M` | multiply | `:` / `%` | midi (note / mono) |
+| `!` | midi cc | `?` | pitch bend |
+| `;` | udp | `=` | osc |
+
+Upper- and lowercase share a name (only the run cadence differs). Non-operator
+cells — `.`, digits, and bare data — have no readout.
+
+**Placement.**
+- **Native** — bottom-right of the window, right-aligned, drawn with karl2d at
+  the status-bar text size (reusing the `STATUS` color / status layout). karl2d
+  bundles a single upright face, so *italic* needs either a bundled italic font
+  or a synthesized shear on the glyph quads; pick one in this milestone (a
+  bundled italic face is the simpler, crisper option).
+- **Web** — a lower-right overlay (e.g. a `position: fixed` corner element or a
+  right-aligned footer line) styled `font-style: italic`, which is trivial in
+  CSS.
+
+**Implementation notes.**
+- Add a small `operator_name(glyph: u8) -> string` helper on the native side
+  (host concern, in `main.odin`, not `core`) and its Elixir twin in
+  `room_live.ex`; both are flat lookups over the table above.
+- Native: extend the render pass with a pointer→cell hit test and one
+  right-aligned italic draw call; nothing changes in the tick loop.
+- Web: assign a `@hover_name` (or resolve inline in the template) and render the
+  italic corner element; drive it from the hovered span, clearing on mouse-out.
+- No new wire messages, no `core` changes, no simulation impact.
+
+**Deliverable:** hovering (native mouse / web pointer) over an operator shows its
+full name in italics in the lower-right corner of both clients; moving off an
+operator clears it.
+
 ## Justfile commands
 
 - `just setup` — clone karl2d into `karl2d/`, pinned to a known commit
