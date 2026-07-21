@@ -379,6 +379,14 @@ live-coding sound in time through the host?) uncluttered by the social layer.
 in the room (opt-in per room), so everyone watches everyone's pattern run — the
 shared-jam view, not just the admin dashboard's.
 
+> **Landed (native host-side viewer).** The host already simulates every remote
+> player's grid; the native window can now display them. Press `` ` `` to cycle
+> the window between the host's own grid and each remote player's grid (read-only,
+> `Shift+`` ` `` to go back). Remote grids render in a per-player color from a
+> palette so each player's input reads as distinct from the host's white and from
+> the others. Still to do for M8: streaming grids to the *browsers* and shared
+> cursors.
+
 **Shared cursors.** Every player's cursor position (and selection, later)
 broadcasts through Phoenix Presence and renders as a labeled, per-player-colored
 remote cursor — in each LiveView editor *and* in the native host's view.

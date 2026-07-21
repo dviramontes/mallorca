@@ -86,7 +86,9 @@ just host MYROOM    # …or host a specific room code
 
 The host window edits its own grid and shows a small square that is **green
 when connected** to the server (red when not). It also simulates and sounds
-every remote player, so keep it running and press `Space` to play.
+every remote player, so keep it running and press `Space` to play. Press
+`` ` `` to cycle the window over each remote player's grid (read-only, shown in
+that player's color; `` Shift+` `` steps back).
 
 **3. Join from a browser**
 

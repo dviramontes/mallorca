@@ -177,16 +177,19 @@ Host_Sim :: struct {
 	marks:  []orca.Mark,
 	events: [dynamic]orca.Event,
 	tick:   uint,
+	name:   string, // player's display name, for the host's remote-view label
+	tint:   int,    // stable per-player color/order index (monotonic join order)
 }
 
 // Everything the host needs to run remote players: the connection, its room, a
 // VM per player, and the link status. Shared by the headless host loop and the
 // windowed app.
 Host_State :: struct {
-	conn:   Net_Conn,
-	room:   string,
-	sims:   map[string]^Host_Sim,
-	status: Net_Status,
+	conn:      Net_Conn,
+	room:      string,
+	sims:      map[string]^Host_Sim,
+	status:    Net_Status,
+	next_tint: int, // hands out a stable color/order index per joining player
 }
 
 // One flat message struct covering player_join / player_leave / edit / paste
@@ -262,6 +265,7 @@ host_free_sim :: proc(sim: ^Host_Sim) {
 	orca.destroy_grid(&sim.grid)
 	delete(sim.marks)
 	delete(sim.events)
+	delete(sim.name)
 	free(sim)
 }
 
@@ -292,6 +296,9 @@ host_connect :: proc(want_room := "") -> (st: Host_State, ok: bool) {
 			sim := new(Host_Sim)
 			sim.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
 			sim.marks = orca.make_marks(sim.grid)
+			sim.name = strings.clone(p.name)
+			sim.tint = st.next_tint
+			st.next_tint += 1
 			st.sims[strings.clone(p.pid)] = sim
 			host_send_snapshot(&st.conn, p.pid, sim.grid, sim.tick)
 		}
@@ -310,6 +317,9 @@ host_apply :: proc(st: ^Host_State, m: Host_Msg) {
 			sim := new(Host_Sim)
 			sim.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
 			sim.marks = orca.make_marks(sim.grid)
+			sim.name = strings.clone(m.name)
+			sim.tint = st.next_tint
+			st.next_tint += 1
 			st.sims[strings.clone(m.pid)] = sim
 			host_send_snapshot(&st.conn, m.pid, sim.grid, sim.tick)
 		}
