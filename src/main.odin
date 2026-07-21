@@ -1141,6 +1141,13 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		if app.midi.ok {
 			mode = fmt.tprintf("%s  midi%s", mode, "+dev" if app.midi.has_dest else "")
 		}
+		// Host mode: show how many remote players are connected and how to view
+		// their grids. A live 0 here means no browser has joined this room.
+		if app.host_active {
+			n := len(app.host.sims)
+			hint := "  ` to view" if n > 0 else ""
+			mode = fmt.tprintf("%s  %d remote%s", mode, n, hint)
+		}
 		text = fmt.tprintf(
 			"%s   %dx%d   %d,%d   %df   %dbpm%s",
 			name,
