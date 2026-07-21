@@ -57,6 +57,11 @@ HASTE :: k2.Color{0x3f, 0x9d, 0x9d, 0xff} // darker cyan: hasted operands
 LOCKED :: k2.Color{0x70, 0x70, 0x70, 0xff} // comment/data cells
 
 PLAY_BORDER :: k2.Color{0x5d, 0xd0, 0x5d, 0xff} // green frame while playing
+
+// M9 connection indicator (host mode).
+CONN_OK :: k2.Color{0x3c, 0xb0, 0x43, 0xff} // connected: green
+CONN_BAD :: k2.Color{0xc0, 0x3a, 0x3a, 0xff} // disconnected: red
+CONN_WAIT :: k2.Color{0xc8, 0x9b, 0x3c, 0xff} // connecting: amber
 SELECT :: k2.Color{0x2c, 0x3e, 0x63, 0xff} // muted blue behind selected cells
 
 DEFAULT_W :: 57
@@ -113,6 +118,11 @@ App :: struct {
 	// MIDI output (M5).
 	midi:         Midi,
 	sus:          [dynamic]Sus_Note, // notes awaiting their note-off
+
+	// Network host (M6/M9): when hosting, the app also simulates every remote
+	// player's grid in the background; `host.status` drives the M9 indicator.
+	host:         Host_State,
+	host_active:  bool,
 }
 
 // A grid + cursor snapshot for undo. Owns its own copy of the cells.
@@ -149,6 +159,7 @@ main :: proc() {
 	debug := false
 	net_spike := false
 	net_host := false
+	headless := false
 	room := ""
 	for arg in os.args[1:] {
 		if arg == "--debug" {
@@ -157,6 +168,8 @@ main :: proc() {
 			net_spike = true
 		} else if arg == "--net-host" {
 			net_host = true
+		} else if arg == "--headless" {
+			headless = true
 		} else if strings.has_prefix(arg, "--room=") {
 			room = arg[len("--room="):]
 		} else if arg != "" && app.file_name == "" {
@@ -164,17 +177,17 @@ main :: proc() {
 		}
 	}
 
-	// Network modes (docs/m6-network-protocol.md) run headless instead of
-	// opening the window.
 	if net_spike {
 		run_net_spike()
 		return
 	}
-	if net_host {
+	// Headless host: no window, just simulate + sound (docs/m6-network-protocol.md).
+	// Otherwise `--net-host` runs the windowed host (connected below).
+	if net_host && headless {
 		run_net_host(debug, room)
 		return
 	}
-	if room != "" {
+	if room != "" && !net_host {
 		fmt.eprintln("mallorca: --room has no effect without --net-host (running as local client)")
 	}
 
@@ -199,6 +212,24 @@ main :: proc() {
 	app.bpm = DEFAULT_BPM
 	app.dirty = true // preview marks for the freshly loaded grid
 	app.midi = midi_init(debug)
+
+	// Windowed host: connect and simulate remote players in the background. The
+	// window renders/edits the host's own grid; the M9 square shows link status.
+	if net_host {
+		st, ok := host_connect(room)
+		app.host = st
+		app.host_active = true
+		if ok {
+			fmt.printfln(
+				"mallorca: hosting room %s — http://localhost:4000/room/%s",
+				st.room,
+				st.room,
+			)
+		} else {
+			fmt.eprintln("mallorca: could not reach the server; running offline")
+		}
+	}
+
 	defer orca.destroy_grid(&app.grid)
 	defer delete(app.marks)
 	defer delete(app.events)
@@ -206,6 +237,9 @@ main :: proc() {
 	defer delete(app.sus)
 	defer clear_undo(&app)
 	defer midi_shutdown(&app.midi)
+	defer if app.host_active {
+		host_shutdown(&app.host)
+	}
 	defer if app.status_msg != "" {
 		delete(app.status_msg)
 	}
@@ -229,6 +263,9 @@ main :: proc() {
 		quit := !k2.update() || (ctrl_held() && k2.key_went_down(.Q))
 		if !quit {
 			handle_input(&app)
+			if app.host_active {
+				host_poll(&app.host) // apply remote edits/joins before ticking
+			}
 			update_sim(&app)
 			update_blink(&app)
 			tick_status(&app)
@@ -240,6 +277,7 @@ main :: proc() {
 			draw_grid(app.grid, app.marks, font, layout)
 			draw_cursor(&app, font, layout)
 			draw_status(&app, font, layout)
+			draw_conn(&app)
 			k2.present()
 
 			free_all(context.temp_allocator)
@@ -773,7 +811,11 @@ update_sim :: proc(app: ^App) {
 		ticks := 0
 		for app.accum >= frame && ticks < MAX_TICKS_PER_FRAME {
 			app.accum -= frame
-			step_tick(app)
+			step_tick(app) // host's own grid (runs advance_notes once for all)
+			if app.host_active {
+				host_tick(&app.host, &app.midi, &app.sus) // remote players
+				host_send_own(&app.host, app.grid, app.tick) // our grid -> /admin
+			}
 			ticks += 1
 		}
 		if app.accum >= frame {
@@ -786,6 +828,9 @@ update_sim :: proc(app: ^App) {
 		// copy of the grid without advancing the simulation.
 		orca.preview_marks(app.grid, app.marks, app.tick, 0)
 		app.dirty = false
+		if app.host_active {
+			host_send_own(&app.host, app.grid, app.tick) // reflect paused edits on /admin
+		}
 	}
 }
 
@@ -867,6 +912,24 @@ draw_border :: proc(app: ^App) {
 		f32(k2.get_screen_height()) - BORDER_INSET*2,
 	}
 	k2.draw_rect_outline(rect, BORDER_THICKNESS, PLAY_BORDER)
+}
+
+// M9: a small square in the top-right showing host<->server link status.
+// Drawn only in host mode.
+draw_conn :: proc(app: ^App) {
+	if !app.host_active {
+		return
+	}
+	color := CONN_BAD
+	#partial switch app.host.status {
+	case .Connected:
+		color = CONN_OK
+	case .Connecting:
+		color = CONN_WAIT
+	}
+	size: f32 = 14
+	x := f32(k2.get_screen_width()) - MARGIN - size
+	k2.draw_rect(k2.Rect{x, f32(MARGIN), size, size}, color)
 }
 
 // Muted fill behind the selected rectangle, drawn under the glyphs.
