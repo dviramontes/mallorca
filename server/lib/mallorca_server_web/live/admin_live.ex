@@ -34,30 +34,36 @@ defmodule MallorcaServerWeb.AdminLive do
     <Layouts.app flash={@flash}>
       <div class="space-y-6 py-6">
         <div class="flex items-center justify-between">
-          <h1 class="text-2xl font-bold">Admin · rooms ({length(@rooms)})</h1>
-          <span class="text-xs opacity-60">auto-refresh 1s</span>
+          <h1 class="text-2xl font-bold text-secondary">Admin · rooms ({length(@rooms)})</h1>
+          <span class="text-xs opacity-60 font-mono">auto-refresh 1s</span>
         </div>
 
         <p :if={@rooms == []} class="opacity-60">no active rooms.</p>
 
-        <div :for={room <- @rooms} class="border border-base-300 rounded p-4 space-y-3">
+        <div :for={room <- @rooms} class="border border-base-300 rounded p-4 space-y-3 bg-base-200">
           <div class="flex items-center gap-3">
-            <h2 class="text-lg font-bold font-mono">{room.code}</h2>
-            <span class={["badge", (room.host_online && "badge-success") || "badge-ghost"]}>
+            <h2 class="text-lg font-bold font-mono text-primary">{room.code}</h2>
+            <span class={[
+              "badge font-mono",
+              (room.host_online && "badge-success") || "badge-outline badge-error"
+            ]}>
               host {(room.host_online && "online") || "offline"}
             </span>
-            <span class="badge badge-outline">{length(room.players)} player(s)</span>
+            <span class="badge badge-outline badge-accent font-mono">
+              {length(room.players)} player(s)
+            </span>
           </div>
 
           <div class="flex flex-wrap gap-4">
             <div :for={p <- room.players} class="space-y-1">
-              <div class="text-xs font-medium">
-                {p.name} <span class="opacity-40 font-mono">{p.id}</span>
+              <div class="text-xs font-mono">
+                <span class="text-secondary">{p.name}</span>
+                <span class="opacity-40">{p.id}</span>
               </div>
               <% rows = grid_rows(room.snapshots[p.id]) %>
               <div
                 :if={rows != []}
-                class="font-mono text-[10px] leading-none border border-base-300 rounded p-1 bg-base-200"
+                class="font-mono text-[10px] leading-none border border-base-300 rounded p-2 bg-base-100 text-primary"
               >
                 <div :for={row <- rows} class="whitespace-pre">{row}</div>
               </div>

@@ -36,27 +36,37 @@ defmodule MallorcaServerWeb.HomeLive do
     ~H"""
     <Layouts.app flash={@flash}>
       <div class="mx-auto max-w-md space-y-6 py-8">
-        <h1 class="text-2xl font-bold">mallorca — network mode</h1>
-        <p class="opacity-70">Create a room and share the code, or join an existing one.</p>
+        <div class="space-y-1">
+          <h1 class="text-2xl font-bold text-primary">mallorca</h1>
+          <p class="text-sm text-secondary uppercase tracking-wide">network mode</p>
+        </div>
+        <p class="opacity-70">
+          A networked <a
+            href="https://100r.co/site/orca.html"
+            target="_blank"
+            rel="noopener"
+            class="text-accent hover:text-secondary"
+          >orca</a> livecoding environment. Create a room and share the code, or join an existing one.
+        </p>
 
         <form phx-change="update" class="space-y-3">
           <input
             name="name"
             value={@name}
             placeholder="your name"
-            class="input input-bordered w-full"
+            class="input input-bordered w-full bg-base-200"
           />
           <input
             name="code"
             value={@code}
             placeholder="room code (to join)"
-            class="input input-bordered w-full font-mono uppercase"
+            class="input input-bordered w-full font-mono uppercase tracking-widest bg-base-200"
           />
         </form>
 
         <div class="flex gap-3">
           <button phx-click="create" class="btn btn-primary">Create room</button>
-          <button phx-click="join" class="btn">Join room</button>
+          <button phx-click="join" class="btn btn-outline btn-accent">Join room</button>
         </div>
       </div>
     </Layouts.app>
