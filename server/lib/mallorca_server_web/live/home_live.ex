@@ -41,7 +41,7 @@ defmodule MallorcaServerWeb.HomeLive do
           <p class="text-sm text-secondary uppercase tracking-wide">network mode</p>
         </div>
         <p class="opacity-70">
-          A livecoding sequencer, together. Create a room and share the code, or join an existing one.
+          A networked orca livecoding environment. Create a room and share the code, or join an existing one.
         </p>
 
         <form phx-change="update" class="space-y-3">
