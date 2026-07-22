@@ -6,6 +6,7 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import NS "core:sys/darwin/Foundation" // macOS-only for now; gate with #+build when porting
 import k2 "../karl2d"
@@ -63,6 +64,18 @@ CONN_OK :: k2.Color{0x3c, 0xb0, 0x43, 0xff} // connected: green
 CONN_BAD :: k2.Color{0xc0, 0x3a, 0x3a, 0xff} // disconnected: red
 CONN_WAIT :: k2.Color{0xc8, 0x9b, 0x3c, 0xff} // connecting: amber
 SELECT :: k2.Color{0x2c, 0x3e, 0x63, 0xff} // muted blue behind selected cells
+
+// Remote-view glyph palette (M8): when the host window shows a remote player's
+// grid, its input renders in one of these so it reads as "not the host's white,
+// and not that other player." Marks (input/output/etc.) still override per cell.
+REMOTE_TINTS :: [?]k2.Color{
+	{0xe6, 0x9a, 0x4c, 0xff}, // orange
+	{0xa7, 0x8b, 0xde, 0xff}, // violet
+	{0x6c, 0xc2, 0x77, 0xff}, // green
+	{0xe0, 0x78, 0xa8, 0xff}, // pink
+	{0xd9, 0xc0, 0x4a, 0xff}, // gold
+	{0xd6, 0x6b, 0x5e, 0xff}, // coral
+}
 
 DEFAULT_W :: 57
 DEFAULT_H :: 25
@@ -123,6 +136,11 @@ App :: struct {
 	// player's grid in the background; `host.status` drives the M9 indicator.
 	host:         Host_State,
 	host_active:  bool,
+
+	// Remote view (M8): which grid the window shows. HOST_VIEW is the host's
+	// own (editable) grid; any other value is the remote player carrying that
+	// tint, shown read-only. Cycled with the '`' key.
+	view_tint:    int,
 }
 
 // A grid + cursor snapshot for undo. Owns its own copy of the cells.
@@ -219,6 +237,7 @@ main :: proc() {
 		st, ok := host_connect(room)
 		app.host = st
 		app.host_active = true
+		app.view_tint = HOST_VIEW
 		if ok {
 			fmt.printfln(
 				"mallorca: hosting room %s — http://localhost:4000/room/%s",
@@ -265,17 +284,30 @@ main :: proc() {
 			handle_input(&app)
 			if app.host_active {
 				host_poll(&app.host) // apply remote edits/joins before ticking
+				// If the player we were viewing left, fall back to our grid.
+				if app.view_tint != HOST_VIEW && viewed_sim(&app) == nil {
+					app.view_tint = HOST_VIEW
+				}
 			}
 			update_sim(&app)
 			update_blink(&app)
 			tick_status(&app)
 
-			layout := compute_layout(app.grid)
+			// The window shows either our own grid or a remote player's
+			// (read-only, in that player's color). Layout follows whichever
+			// grid is on screen, since sizes can differ.
+			view := viewed_sim(&app)
+			disp := view.grid if view != nil else app.grid
+			layout := compute_layout(disp)
 			k2.clear(BG)
 			draw_border(&app)
-			draw_selection(&app, layout)
-			draw_grid(app.grid, app.marks, font, layout)
-			draw_cursor(&app, font, layout)
+			if view != nil {
+				draw_grid(view.grid, view.marks, font, layout, remote_tint(view.tint))
+			} else {
+				draw_selection(&app, layout)
+				draw_grid(app.grid, app.marks, font, layout, FG)
+				draw_cursor(&app, font, layout)
+			}
 			draw_status(&app, font, layout)
 			draw_conn(&app)
 			k2.present()
@@ -371,6 +403,21 @@ handle_input :: proc(app: ^App) {
 		app.audition = false
 	}
 
+	// Host: cycle the window between our own grid and each remote player's
+	// grid. '`' steps forward, Shift+'`' backward.
+	if app.host_active && k2.key_went_down(.Backtick) {
+		cycle_view(app, -1 if shift_held() else +1)
+	}
+
+	// While viewing a remote player's grid the window is read-only: only the
+	// view cycle (above) and play/pause act; all edits are suppressed.
+	if viewed_sim(app) != nil {
+		if k2.key_went_down(.Space) {
+			toggle_play(app)
+		}
+		return
+	}
+
 	// Ctrl/Cmd shortcuts own the whole key event: save, step, resize,
 	// clipboard, select-all. Handled first so those keys never leak into
 	// movement or glyph entry.
@@ -425,12 +472,7 @@ handle_input :: proc(app: ^App) {
 
 	// Play/pause.
 	if k2.key_went_down(.Space) {
-		app.playing = !app.playing
-		app.accum = 0
-		if !app.playing {
-			flush_notes(&app.midi, &app.sus) // don't leave notes hanging when stopping
-		}
-		set_status(app, fmt.aprintf("%s", "playing" if app.playing else "paused"))
+		toggle_play(app)
 	}
 
 	// Letters: unshifted lowercase (on-bang ops), shifted uppercase
@@ -475,6 +517,77 @@ handle_shortcuts :: proc(app: ^App) {
 	if k2.key_went_down(.V) {paste_clip(app)}
 	if k2.key_went_down(.A) {select_all(app)}
 	if k2.key_went_down(.Z) {undo(app)}
+}
+
+// Toggle playback of the shared clock (drives our grid and every remote sim).
+toggle_play :: proc(app: ^App) {
+	app.playing = !app.playing
+	app.accum = 0
+	if !app.playing {
+		flush_notes(&app.midi, &app.sus) // don't leave notes hanging when stopping
+	}
+	set_status(app, fmt.aprintf("%s", "playing" if app.playing else "paused"))
+}
+
+//--------------//
+// REMOTE VIEWS //
+//--------------//
+
+// app.view_tint == HOST_VIEW means the window shows the host's own (editable)
+// grid; any other value selects the remote player carrying that tint.
+HOST_VIEW :: -1
+
+// The remote player's sim currently on screen, or nil when we're showing our
+// own grid (or the viewed player has since left).
+viewed_sim :: proc(app: ^App) -> ^Host_Sim {
+	if !app.host_active || app.view_tint == HOST_VIEW {
+		return nil
+	}
+	for _, sim in app.host.sims {
+		if sim.tint == app.view_tint {
+			return sim
+		}
+	}
+	return nil
+}
+
+// Per-player glyph color, so each remote player's input is distinct from the
+// host's white and from every other player.
+remote_tint :: proc(tint: int) -> k2.Color {
+	tints := REMOTE_TINTS // a constant array can't be indexed by a variable
+	return tints[tint %% len(tints)]
+}
+
+// Step the window's view across participants: our own grid (HOST_VIEW) then
+// each remote player in join order, wrapping around. `dir` is +1 or -1.
+cycle_view :: proc(app: ^App, dir: int) {
+	if !app.host_active {
+		return
+	}
+	// Ordered participant list: HOST_VIEW first, then remote tints ascending
+	// (tints are handed out monotonically, so ascending == join order).
+	tints := make([dynamic]int, context.temp_allocator)
+	append(&tints, HOST_VIEW)
+	for _, sim in app.host.sims {
+		append(&tints, sim.tint)
+	}
+	slice.sort(tints[:])
+
+	cur := 0
+	for t, i in tints {
+		if t == app.view_tint {
+			cur = i
+			break
+		}
+	}
+	app.view_tint = tints[(cur + dir + len(tints)) %% len(tints)]
+
+	if sim := viewed_sim(app); sim != nil {
+		name := sim.name if sim.name != "" else "player"
+		set_status(app, fmt.aprintf("viewing %s (read-only)", name))
+	} else {
+		set_status(app, fmt.aprintf("viewing your grid"))
+	}
 }
 
 // Write a glyph at the cursor, collapsing any selection. In insert mode
@@ -947,14 +1060,17 @@ draw_selection :: proc(app: ^App, layout: Layout) {
 	k2.draw_rect(rect, SELECT)
 }
 
-draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: Layout) {
+// `base` is the default glyph color (the host's white for our grid; a remote
+// player's tint for their grid). Empty-cell ruler/dim and per-cell marks
+// override it exactly as before.
+draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: Layout, base: k2.Color) {
 	buf: [1]u8
 	for y in 0 ..< grid.height {
 		for x in 0 ..< grid.width {
 			glyph := orca.grid_get(grid, x, y)
 			mark := marks[y*grid.width + x]
 			pos := k2.Vec2{MARGIN + f32(x)*layout.cell_w, MARGIN + f32(y)*layout.cell_h}
-			color := FG
+			color := base
 			if glyph == orca.EMPTY_GLYPH {
 				// Ruler overlay: '+' every 8x8 intersection, dim '.' elsewhere.
 				if x % RULER_SPACING == 0 && y % RULER_SPACING == 0 {
@@ -1007,6 +1123,15 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	text: string
 	if app.status_msg != "" {
 		text = app.status_msg
+	} else if sim := viewed_sim(app); sim != nil {
+		who := sim.name if sim.name != "" else "player"
+		text = fmt.tprintf(
+			"viewing %s   %dx%d   %dt   read-only   ` to cycle",
+			who,
+			sim.grid.width,
+			sim.grid.height,
+			sim.tick,
+		)
 	} else {
 		name := app.file_name if app.file_name != "" else "(unsaved)"
 		mode := "  play" if app.playing else "  stop"
@@ -1015,6 +1140,13 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		}
 		if app.midi.ok {
 			mode = fmt.tprintf("%s  midi%s", mode, "+dev" if app.midi.has_dest else "")
+		}
+		// Host mode: show how many remote players are connected and how to view
+		// their grids. A live 0 here means no browser has joined this room.
+		if app.host_active {
+			n := len(app.host.sims)
+			hint := "  ` to view" if n > 0 else ""
+			mode = fmt.tprintf("%s  %d remote%s", mode, n, hint)
 		}
 		text = fmt.tprintf(
 			"%s   %dx%d   %d,%d   %df   %dbpm%s",
