@@ -96,6 +96,48 @@ Core design decisions:
 - **Imports:** unprefixed Odin imports are relative to the importing file,
   so `src/main.odin` uses `import k2 "../karl2d"` and `import "core"`.
 
+## Feature status
+
+A quick two-list snapshot of the project. The milestone sections below have the
+detail; this is the at-a-glance version. "Implemented" means merged to `main`.
+
+### Implemented
+
+- **Grid editor** — load/edit/save rectangular `.orca` grids; ruler markers;
+  status bar (M1–M2).
+- **Cursor & editing** — arrow movement, glyph entry, backspace/delete/clear,
+  `Cmd/Ctrl+S` save (M2).
+- **Selection & clipboard** — rectangular selection, copy/cut/paste (mirrored
+  through the macOS system pasteboard), undo, interactive grid resize, insert
+  mode, BPM control (M4).
+- **Simulation** — full `sim.c` port: all operators, per-cell marks,
+  port/lock/sleep, all five event variants; four frames per beat; play/pause and
+  single-step; golden-fixture conformance tests (M3).
+- **MIDI output** — CoreMIDI note/CC/pitch-bend, tick-accurate note durations,
+  `%` channel monophony, note flushing on stop/quit (M5).
+- **Network mode** — native app as authoritative host (owns clock + MIDI +
+  simulates every player's grid); Phoenix server with rooms; browser LiveView
+  editor; NDJSON/TCP host link; snapshot streaming; `/admin` dashboard (M6).
+- **Native remote viewer** — host window can solo any remote player's grid
+  (read-only, per-player color), cycled with `` ` `` (M8, first slice).
+- **Connection indicator** — green/red/amber status square on the native client
+  (M9).
+- **Hover readout** — hovering an operator shows its full name in italics in the
+  lower-right on both clients (M10; native uses a bundled JetBrains Mono italic
+  face, web uses CSS).
+
+### To implement
+
+- **Jam canvas** — composite every player's input onto one native screen,
+  color-coded (M8; implemented on the `remote-view-m8` branch, not yet merged).
+- **Grid broadcast to browsers + shared cursors** — players see each other's
+  grids and cursors in the LiveView, via Presence (M8, remaining).
+- **Modal (vim-style) editing** — normal/insert/visual modes (M7, not started).
+- **SQLite persistence wiring** — crash-recovery tables are designed but
+  snapshots are still in-memory only (M6 follow-up).
+- **OSC / UDP delivery** — the VM produces `=`/`;` events; they are not yet sent.
+- **Cross-platform** — currently macOS only (CoreMIDI + AppKit paths).
+
 ## Milestones
 
 Each milestone is runnable end to end.
@@ -489,10 +531,10 @@ cells — `.`, digits, and bare data — have no readout.
 
 **Placement.**
 - **Native** — bottom-right of the window, right-aligned, drawn with karl2d at
-  the status-bar text size (reusing the `STATUS` color / status layout). karl2d
-  bundles a single upright face, so *italic* needs either a bundled italic font
-  or a synthesized shear on the glyph quads; pick one in this milestone (a
-  bundled italic face is the simpler, crisper option).
+  the status-bar text size. karl2d bundles a single upright face and can't shear
+  glyph quads, so *italic* uses a second bundled face (`JetBrainsMono-Italic`)
+  loaded alongside the regular one. Drawn on its own line just above the status
+  bar so a long status line can't cover it.
 - **Web** — a lower-right overlay (e.g. a `position: fixed` corner element or a
   right-aligned footer line) styled `font-style: italic`, which is trivial in
   CSS.
@@ -510,6 +552,13 @@ cells — `.`, digits, and bare data — have no readout.
 **Deliverable:** hovering (native mouse / web pointer) over an operator shows its
 full name in italics in the lower-right corner of both clients; moving off an
 operator clears it.
+
+> **Landed.** Both clients render the readout in italics: native via a
+> pointer→cell hit test and a right-aligned draw (`operator_name` +
+> `draw_hover_readout` in `src/main.odin`) using a bundled `JetBrainsMono-Italic`
+> face, on its own line above the status bar; web via a client-side `OpReadout`
+> JS hook driving a `position: fixed` italic corner element (`app.js` +
+> `room_live.ex`).
 
 ## Justfile commands
 

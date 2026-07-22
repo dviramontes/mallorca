@@ -189,6 +189,8 @@ defmodule MallorcaServerWeb.RoomLive do
 
         <div
           :if={@rows != []}
+          id="grid"
+          phx-hook="OpReadout"
           class="mx-auto w-fit font-mono text-sm leading-none border border-base-300 rounded p-3 bg-base-200 text-primary"
         >
           <div :for={{row, y} <- Enum.with_index(@rows)} class="flex">
@@ -201,6 +203,14 @@ defmodule MallorcaServerWeb.RoomLive do
               ]}
             >{String.at(row, x)}</span>
           </div>
+        </div>
+        <%!-- M10: operator-name readout, lower-right, italic. Filled by the
+              OpReadout JS hook on hover; empty off an operator. --%>
+        <div
+          id="op-readout"
+          phx-update="ignore"
+          class="fixed bottom-3 right-4 font-mono text-sm italic text-primary opacity-70 pointer-events-none select-none"
+        >
         </div>
         <p :if={@rows == []} class="text-center opacity-60">waiting for host…</p>
 
