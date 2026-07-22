@@ -122,8 +122,9 @@ detail; this is the at-a-glance version. "Implemented" means merged to `main`.
   (read-only, per-player color), cycled with `` ` `` (M8, first slice).
 - **Connection indicator** — green/red/amber status square on the native client
   (M9).
-- **Hover readout** — hovering an operator shows its full name in the lower-right
-  on both clients (M10).
+- **Hover readout** — hovering an operator shows its full name in italics in the
+  lower-right on both clients (M10; native uses a bundled JetBrains Mono italic
+  face, web uses CSS).
 
 ### To implement
 
@@ -132,8 +133,6 @@ detail; this is the at-a-glance version. "Implemented" means merged to `main`.
 - **Grid broadcast to browsers + shared cursors** — players see each other's
   grids and cursors in the LiveView, via Presence (M8, remaining).
 - **Modal (vim-style) editing** — normal/insert/visual modes (M7, not started).
-- **M10 native italic** — bundle a JetBrains Mono italic face so the native
-  readout is italic like the web side (follow-up; currently upright).
 - **SQLite persistence wiring** — crash-recovery tables are designed but
   snapshots are still in-memory only (M6 follow-up).
 - **OSC / UDP delivery** — the VM produces `=`/`;` events; they are not yet sent.
@@ -532,10 +531,10 @@ cells — `.`, digits, and bare data — have no readout.
 
 **Placement.**
 - **Native** — bottom-right of the window, right-aligned, drawn with karl2d at
-  the status-bar text size (reusing the `STATUS` color / status layout). karl2d
-  bundles a single upright face, so *italic* needs either a bundled italic font
-  or a synthesized shear on the glyph quads; pick one in this milestone (a
-  bundled italic face is the simpler, crisper option).
+  the status-bar text size. karl2d bundles a single upright face and can't shear
+  glyph quads, so *italic* uses a second bundled face (`JetBrainsMono-Italic`)
+  loaded alongside the regular one. Drawn on its own line just above the status
+  bar so a long status line can't cover it.
 - **Web** — a lower-right overlay (e.g. a `position: fixed` corner element or a
   right-aligned footer line) styled `font-style: italic`, which is trivial in
   CSS.
@@ -554,12 +553,12 @@ cells — `.`, digits, and bare data — have no readout.
 full name in italics in the lower-right corner of both clients; moving off an
 operator clears it.
 
-> **Landed.** Both clients render the readout: native via a pointer→cell hit
-> test and a right-aligned draw (`operator_name` + `draw_hover_readout` in
-> `src/main.odin`), web via a client-side `OpReadout` JS hook driving a
-> `position: fixed` corner element (`app.js` + `room_live.ex`). The web readout
-> is italic (CSS); the native one is upright for now — a bundled JetBrains Mono
-> italic face is the remaining follow-up (see the *To implement* list).
+> **Landed.** Both clients render the readout in italics: native via a
+> pointer→cell hit test and a right-aligned draw (`operator_name` +
+> `draw_hover_readout` in `src/main.odin`) using a bundled `JetBrainsMono-Italic`
+> face, on its own line above the status bar; web via a client-side `OpReadout`
+> JS hook driving a `position: fixed` italic corner element (`app.js` +
+> `room_live.ex`).
 
 ## Justfile commands
 

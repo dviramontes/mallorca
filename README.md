@@ -168,7 +168,7 @@ just run examples/j.orca
 ## Project structure
 
 ```text
-assets/          bundled font
+assets/          bundled fonts (regular + italic for the hover readout)
 examples/        example .orca grids
 patches/         local patches applied to the pinned karl2d revision
 src/core/        grid, marks, events, and simulation engine
