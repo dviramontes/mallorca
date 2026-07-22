@@ -22,6 +22,7 @@ people join a shared room from a browser and live-code together. See
 - Orca-c-compatible operators, per-cell marks, and event generation
 - Live MIDI output via CoreMIDI, with tick-accurate note durations
 - Network mode: host a room natively while others join and jam from a browser
+- Hover an operator to read its full name (native and browser)
 - Visual highlighting for inputs, outputs, locked cells, and haste inputs
 - Selection with copy/cut/paste, undo, interactive grid resize, and BPM control
 - Headless core package with tests independent of the graphical application

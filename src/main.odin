@@ -309,6 +309,7 @@ main :: proc() {
 				draw_cursor(&app, font, layout)
 			}
 			draw_status(&app, font, layout)
+			draw_hover_readout(disp, font, layout)
 			draw_conn(&app)
 			k2.present()
 
@@ -1043,6 +1044,126 @@ draw_conn :: proc(app: ^App) {
 	size: f32 = 14
 	x := f32(k2.get_screen_width()) - MARGIN - size
 	k2.draw_rect(k2.Rect{x, f32(MARGIN), size, size}, color)
+}
+
+//-----------------//
+// M10 HOVER READOUT //
+//-----------------//
+
+// Full operator names for the hover readout (M10). Mirrors the op_* procs in
+// core/sim.odin; upper- and lowercase share a name (only the run cadence
+// differs). Returns "" for non-operator cells (`.`, digits, bare data).
+operator_name :: proc(glyph: u8) -> string {
+	g := glyph
+	if g >= 'a' && g <= 'z' {
+		g -= 'a' - 'A' // fold to uppercase; the name is case-independent
+	}
+	switch g {
+	case 'A':
+		return "add"
+	case 'B':
+		return "subtract"
+	case 'C':
+		return "clock"
+	case 'D':
+		return "delay"
+	case 'E':
+		return "move east"
+	case 'F':
+		return "if"
+	case 'G':
+		return "generator"
+	case 'H':
+		return "halt"
+	case 'I':
+		return "increment"
+	case 'J':
+		return "jump"
+	case 'K':
+		return "konkat"
+	case 'L':
+		return "lesser"
+	case 'M':
+		return "multiply"
+	case 'N':
+		return "move north"
+	case 'O':
+		return "offset (read)"
+	case 'P':
+		return "push"
+	case 'Q':
+		return "query"
+	case 'R':
+		return "random"
+	case 'S':
+		return "move south"
+	case 'T':
+		return "track"
+	case 'U':
+		return "euclid"
+	case 'V':
+		return "variable"
+	case 'W':
+		return "move west"
+	case 'X':
+		return "teleport"
+	case 'Y':
+		return "yump"
+	case 'Z':
+		return "lerp"
+	case '*':
+		return "bang"
+	case '#':
+		return "comment"
+	case ':':
+		return "midi (note)"
+	case '%':
+		return "midi (mono)"
+	case '!':
+		return "midi cc"
+	case '?':
+		return "pitch bend"
+	case ';':
+		return "udp"
+	case '=':
+		return "osc"
+	}
+	return ""
+}
+
+// Map the mouse pointer to a grid cell (inverse of the cell-rect layout the
+// renderer uses), or (-1, -1) when the pointer is outside the grid.
+hover_cell :: proc(grid: orca.Grid, layout: Layout) -> (cx, cy: int) {
+	m := k2.get_mouse_position()
+	fx := (m.x - MARGIN) / layout.cell_w
+	fy := (m.y - MARGIN) / layout.cell_h
+	if fx < 0 || fy < 0 {
+		return -1, -1
+	}
+	cx, cy = int(fx), int(fy)
+	if cx >= grid.width || cy >= grid.height {
+		return -1, -1
+	}
+	return cx, cy
+}
+
+// M10: when the mouse rests on an operator, show its full name in the lower-
+// right corner (right-aligned, status-bar text size). Nothing off an operator.
+// (Rendered upright for now; a bundled italic face is a follow-up — see PLAN.)
+draw_hover_readout :: proc(grid: orca.Grid, font: k2.Font, layout: Layout) {
+	cx, cy := hover_cell(grid, layout)
+	if cx < 0 {
+		return
+	}
+	name := operator_name(orca.grid_get(grid, cx, cy))
+	if name == "" {
+		return
+	}
+	size := layout.font_size * STATUS_SCALE
+	w := k2.measure_text(name, size, font).x
+	x := f32(k2.get_screen_width()) - MARGIN - w
+	y := f32(k2.get_screen_height()) - size - MARGIN
+	k2.draw_text(name, {x, y}, size, STATUS, font)
 }
 
 // Muted fill behind the selected rectangle, drawn under the glyphs.
