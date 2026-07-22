@@ -310,10 +310,14 @@ main :: proc() {
 			if view != nil {
 				draw_grid(view.grid, view.marks, font, layout, remote_tint(view.tint))
 			} else {
+				// Jam canvas: our editable grid plus every remote player's
+				// input overlaid in their color.
 				draw_selection(&app, layout)
 				draw_grid(app.grid, app.marks, font, layout, FG)
+				draw_jam_overlay(&app, font, layout)
 				draw_cursor(&app, font, layout)
 			}
+			draw_legend(&app, font, layout)
 			draw_status(&app, font, layout)
 			draw_hover_readout(disp, font_italic, layout)
 			draw_conn(&app)
@@ -1299,4 +1303,71 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	size := layout.font_size * STATUS_SCALE
 	y := f32(k2.get_screen_height()) - size - MARGIN
 	k2.draw_text(text, {MARGIN, y}, size, STATUS, font)
+}
+
+// Jam canvas (M8): overlay every remote player's non-empty glyphs onto the
+// host's own grid in that player's tint, so the host sees everyone's input at
+// once. Only cells the host left empty are painted, so the host's own white
+// glyphs stay legible; remote input reads as color. Sims are drawn in tint
+// (join) order so overlapping remote cells don't flicker with map iteration.
+draw_jam_overlay :: proc(app: ^App, font: k2.Font, layout: Layout) {
+	if !app.host_active || len(app.host.sims) == 0 {
+		return
+	}
+	order := make([dynamic]^Host_Sim, context.temp_allocator)
+	for _, sim in app.host.sims {
+		append(&order, sim)
+	}
+	slice.sort_by(order[:], proc(a, b: ^Host_Sim) -> bool {return a.tint < b.tint})
+
+	buf: [1]u8
+	for sim in order {
+		color := remote_tint(sim.tint)
+		w := min(sim.grid.width, app.grid.width)
+		h := min(sim.grid.height, app.grid.height)
+		for y in 0 ..< h {
+			for x in 0 ..< w {
+				glyph := orca.grid_get(sim.grid, x, y)
+				if glyph == orca.EMPTY_GLYPH {
+					continue
+				}
+				// Don't paint over the host's own glyphs — keep those white.
+				if orca.grid_get(app.grid, x, y) != orca.EMPTY_GLYPH {
+					continue
+				}
+				pos := k2.Vec2{MARGIN + f32(x)*layout.cell_w, MARGIN + f32(y)*layout.cell_h}
+				buf[0] = glyph
+				k2.draw_text(string(buf[:]), pos, layout.font_size, color, font)
+			}
+		}
+	}
+}
+
+// Legend (M8): a compact row of colored name chips just above the status line,
+// mapping each remote player's tint to their name. Drawn only in host mode and
+// only when at least one remote player is connected (otherwise the status
+// line's "N remote" already says everything).
+draw_legend :: proc(app: ^App, font: k2.Font, layout: Layout) {
+	if !app.host_active || len(app.host.sims) == 0 {
+		return
+	}
+	order := make([dynamic]^Host_Sim, context.temp_allocator)
+	for _, sim in app.host.sims {
+		append(&order, sim)
+	}
+	slice.sort_by(order[:], proc(a, b: ^Host_Sim) -> bool {return a.tint < b.tint})
+
+	size := layout.font_size * STATUS_SCALE
+	// One line above the status line (status sits at height - size - MARGIN).
+	y := f32(k2.get_screen_height()) - size*2 - MARGIN - size*0.4
+	x := f32(MARGIN)
+	dot := size * 0.6
+	for sim in order {
+		name := sim.name if sim.name != "" else "player"
+		// Filled swatch in the player's tint, then their name in the same color.
+		k2.draw_rect(k2.Rect{x, y + (size - dot)*0.5, dot, dot}, remote_tint(sim.tint))
+		x += dot + size*0.35
+		k2.draw_text(name, {x, y}, size, remote_tint(sim.tint), font)
+		x += f32(len(name))*size*ADVANCE_EM + size*1.1
+	}
 }
