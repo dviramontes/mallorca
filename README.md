@@ -77,7 +77,8 @@ just server         # serves http://localhost:4000
 ```
 
 **2. Host a room** — the native app, in another terminal (run `just setup`
-first if you haven't):
+first if you haven't). Start this **after** the server from step 1 is up: the
+host connects to the server on launch, so the server must already be running.
 
 ```sh
 just host           # opens the editor window and prints a room URL
