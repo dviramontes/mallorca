@@ -176,15 +176,20 @@ defmodule MallorcaServerWeb.RoomLive do
     <Layouts.app flash={@flash}>
       <div id="editor" phx-hook="Paste" class="space-y-4 py-6" phx-window-keydown="key">
         <div class="flex items-center justify-between max-w-3xl mx-auto">
-          <h1 class="text-xl font-bold">Room <span class="font-mono">{@code}</span></h1>
-          <span class={["badge", (@host_online && "badge-success") || "badge-ghost"]}>
+          <h1 class="text-xl font-bold text-secondary">
+            Room <span class="font-mono text-primary">{@code}</span>
+          </h1>
+          <span class={[
+            "badge font-mono",
+            (@host_online && "badge-success") || "badge-outline badge-error"
+          ]}>
             host {(@host_online && "online") || "offline"}
           </span>
         </div>
 
         <div
           :if={@rows != []}
-          class="mx-auto w-fit font-mono text-sm leading-none border border-base-300 rounded p-2 bg-base-200"
+          class="mx-auto w-fit font-mono text-sm leading-none border border-base-300 rounded p-3 bg-base-200 text-primary"
         >
           <div :for={{row, y} <- Enum.with_index(@rows)} class="flex">
             <span
@@ -192,7 +197,7 @@ defmodule MallorcaServerWeb.RoomLive do
               class={[
                 "inline-block w-[1ch] text-center",
                 (x == @cx and y == @cy) && "bg-primary text-primary-content",
-                String.at(row, x) == "." && "opacity-30"
+                String.at(row, x) == "." && "opacity-25"
               ]}
             >{String.at(row, x)}</span>
           </div>
@@ -200,15 +205,19 @@ defmodule MallorcaServerWeb.RoomLive do
         <p :if={@rows == []} class="text-center opacity-60">waiting for host…</p>
 
         <p class="text-center text-xs opacity-60">
-          <span class="font-mono">{if rem(@tick || 0, 2) == 0, do: "■", else: "□"}</span>
+          <span class="font-mono text-primary">
+            {if rem(@tick || 0, 2) == 0, do: "■", else: "□"}
+          </span>
           · type to edit · arrows to move
         </p>
 
         <div class="max-w-3xl mx-auto">
-          <h2 class="text-xs uppercase opacity-60 mb-1">Players ({length(@roster)})</h2>
+          <h2 class="text-xs uppercase tracking-wide text-secondary mb-2">
+            Players ({length(@roster)})
+          </h2>
           <ul class="flex flex-wrap gap-2">
-            <li :for={p <- @roster} class="badge badge-outline">
-              {p.name}<span :if={p.id == @pid}>&nbsp;(you)</span>
+            <li :for={p <- @roster} class="badge badge-outline badge-accent font-mono">
+              {p.name}<span :if={p.id == @pid} class="opacity-60">&nbsp;(you)</span>
             </li>
           </ul>
         </div>
