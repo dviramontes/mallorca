@@ -1154,10 +1154,14 @@ hover_cell :: proc(grid: orca.Grid, layout: Layout) -> (cx, cy: int) {
 }
 
 // M10: when the mouse rests on an operator, show its full name in italics in
-// the lower-right corner. Nothing off an operator. Drawn on its own line just
-// above the status bar (right-aligned) so a long status line can't cover it,
-// and in the brighter FG so it reads as the active hover, not chrome. `font`
-// is the bundled italic face (see FONT_ITALIC_DATA / main).
+// the lower-right corner. Nothing off an operator (empty cells, digits, and
+// bare data have no readout). Drawn on its own line just above the status bar
+// (right-aligned) so a long status line can't cover it. `font` is the bundled
+// italic face (see FONT_ITALIC_DATA / main).
+//
+// Note: the readout only appears while the window is focused — macOS delivers
+// mouse-moved events to the key window only, so an unfocused window reports a
+// stale pointer.
 draw_hover_readout :: proc(grid: orca.Grid, font: k2.Font, layout: Layout) {
 	cx, cy := hover_cell(grid, layout)
 	if cx < 0 {
@@ -1172,7 +1176,7 @@ draw_hover_readout :: proc(grid: orca.Grid, font: k2.Font, layout: Layout) {
 	x := f32(k2.get_screen_width()) - MARGIN - w
 	// One line above the status bar (which sits at height - size - MARGIN).
 	y := f32(k2.get_screen_height()) - size*2 - MARGIN
-	k2.draw_text(name, {x, y}, size, FG, font)
+	k2.draw_text(name, {x, y}, size, STATUS, font)
 }
 
 // Muted fill behind the selected rectangle, drawn under the glyphs.
