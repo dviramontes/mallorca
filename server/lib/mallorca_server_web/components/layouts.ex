@@ -37,7 +37,10 @@ defmodule MallorcaServerWeb.Layouts do
     ~H"""
     <header class="bg-primary text-primary-content">
       <div class="mx-auto max-w-3xl flex items-center justify-between px-4">
-        <a href="/" class="flex items-center gap-2 px-2 py-3 font-bold tracking-wide uppercase hover:bg-success hover:text-success-content">
+        <a
+          href="/"
+          class="flex items-center gap-2 px-2 py-3 font-bold tracking-wide uppercase hover:bg-success hover:text-success-content"
+        >
           <span aria-hidden="true">◆</span> mallorca
         </a>
         <nav class="flex items-stretch text-sm">
