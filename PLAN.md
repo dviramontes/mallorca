@@ -125,8 +125,10 @@ detail; this is the at-a-glance version. "Implemented" means merged to `main`.
 - **Hover readout** — hovering an operator shows its full name in italics in the
   lower-right on both clients (M10; native uses a bundled JetBrains Mono italic
   face, web uses CSS).
-- **Operator overview** — `Ctrl/Cmd+G` opens Orca's two-column operator guide;
+- **Operator overview** — `Ctrl/Cmd+G` opens Orca's responsive operator guide;
   press the shortcut again or Escape to close it.
+- **Generator projection** — `G` destination cells are outlined as one region,
+  previewing where its configured X/Y offset and length will write.
 
 ### To implement
 
