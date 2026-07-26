@@ -291,10 +291,21 @@ test_marks_ports :: proc(t: ^testing.T) {
 
 @(test)
 test_marks_generator_nonlocking :: proc(t: ^testing.T) {
-	// G's projected output is nonlocking and stunned: Output + Sleep.
+	// G's projected output is nonlocking, stunned, and identified for rendering.
 	grid, marks := tick_marks(t, "..1G5\n.....\n")
 	w := grid.width
-	testing.expect_value(t, marks[1*w + 3], Mark{.Output, .Sleep})
+	testing.expect_value(t, marks[1*w + 3], Mark{.Output, .Sleep, .Projected})
+}
+
+@(test)
+test_marks_generator_projected_region :: proc(t: ^testing.T) {
+	grid, marks := tick_marks(t, "..4G1234\n........\n")
+	w := grid.width
+	for x in 3 ..= 6 {
+		testing.expect(t, .Projected in marks[w + x])
+	}
+	testing.expect(t, .Projected not_in marks[w + 2])
+	testing.expect(t, .Projected not_in marks[w + 7])
 }
 
 @(test)

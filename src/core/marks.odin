@@ -9,6 +9,7 @@ Mark_Flag :: enum u8 {
 	Haste_Input, // operand read on the hasted (left/upper) side
 	Lock,        // cell must not execute as an operator this tick
 	Sleep,       // cell was just written; skip execution this tick
+	Projected,   // cell is inside a generator's destination region
 }
 
 Mark :: bit_set[Mark_Flag; u8]
