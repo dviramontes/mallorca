@@ -129,6 +129,7 @@ IN :: Mark{.Input}
 OUT :: Mark{.Output}
 PARAM :: Mark{.Haste_Input}
 NONLOCKING :: Mark{.Lock}
+PROJECTED :: Mark{.Projected}
 
 // Ports lock their operand cells by default; passing NONLOCKING (the lock
 // flag itself) cancels that via symmetric difference — same trick as
@@ -435,7 +436,7 @@ op_generator :: proc(s: ^Sim, y, x: int, ch: u8) {
 	port(s, y, x, 0, -1, IN + PARAM) // len
 	for i in 0 ..< length {
 		port(s, y, x, 0, i + 1, IN)
-		port(s, y, x, out_y, out_x + i, OUT + NONLOCKING)
+		port(s, y, x, out_y, out_x + i, OUT + NONLOCKING + PROJECTED)
 		g := peek(s, y, x, 0, i + 1)
 		poke_stunned(s, y, x, out_y, out_x + i, g)
 	}

@@ -59,6 +59,8 @@ OUTPUT_FG :: k2.Color{0x17, 0x17, 0x17, 0xff}
 INPUT :: k2.Color{0x6b, 0xd9, 0xd9, 0xff} // cyan-ish: operand cells
 HASTE :: k2.Color{0x3f, 0x9d, 0x9d, 0xff} // darker cyan: hasted operands
 LOCKED :: k2.Color{0x70, 0x70, 0x70, 0xff} // comment/data cells
+PROJECTED :: k2.Color{224, 191, 100, 230} // Orca yellow at 90% alpha
+PROJECTED_BORDER_THICKNESS :: f32(2)
 
 PLAY_BORDER :: k2.Color{0x5d, 0xd0, 0x5d, 0xff} // green frame while playing
 
@@ -1294,7 +1296,7 @@ draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: La
 			case .Output in mark:
 				// Freshly written cells draw inverted, like Orca.
 				rect := k2.Rect{pos.x, pos.y, layout.cell_w, layout.cell_h}
-				k2.draw_rect(rect, OUTPUT_BG)
+				k2.draw_rect(rect, PROJECTED if .Projected in mark else OUTPUT_BG)
 				color = OUTPUT_FG
 			case .Input in mark:
 				color = INPUT
@@ -1303,6 +1305,29 @@ draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: La
 			}
 			buf[0] = glyph
 			k2.draw_text(string(buf[:]), pos, layout.font_size, color, font)
+			if .Projected in mark {
+				// Draw only exposed edges so adjacent projected cells read as
+				// one destination region rather than a row of boxed cells.
+				thickness := PROJECTED_BORDER_THICKNESS
+				if y == 0 || .Projected not_in marks[(y - 1)*grid.width + x] {
+					k2.draw_rect({pos.x, pos.y, layout.cell_w, thickness}, PROJECTED)
+				}
+				if y == grid.height - 1 || .Projected not_in marks[(y + 1)*grid.width + x] {
+					k2.draw_rect(
+						{pos.x, pos.y + layout.cell_h - thickness, layout.cell_w, thickness},
+						PROJECTED,
+					)
+				}
+				if x == 0 || .Projected not_in marks[y*grid.width + x - 1] {
+					k2.draw_rect({pos.x, pos.y, thickness, layout.cell_h}, PROJECTED)
+				}
+				if x == grid.width - 1 || .Projected not_in marks[y*grid.width + x + 1] {
+					k2.draw_rect(
+						{pos.x + layout.cell_w - thickness, pos.y, thickness, layout.cell_h},
+						PROJECTED,
+					)
+				}
+			}
 		}
 	}
 }
