@@ -49,7 +49,8 @@ FG :: k2.Color{0xf0, 0xf0, 0xf0, 0xff}
 DIM :: k2.Color{0x50, 0x50, 0x50, 0xff}
 RULER :: k2.Color{0x88, 0x88, 0x88, 0xff}
 STATUS :: k2.Color{0xb0, 0xb0, 0xb0, 0xff}
-CURSOR_BG :: k2.Color{0xff, 0xff, 0xff, 0xff}
+SECONDARY :: k2.Color{0xe3, 0x7f, 0x9a, 0xff} // pink; matches web text-secondary
+CURSOR_BG :: SECONDARY
 CURSOR_FG :: k2.Color{0x17, 0x17, 0x17, 0xff}
 
 // Mark highlighting (per-tick sim scratch, see core/marks.odin).
@@ -319,7 +320,14 @@ main :: proc() {
 			}
 			draw_legend(&app, font, layout)
 			draw_status(&app, font, layout)
-			draw_hover_readout(disp, font_italic, layout)
+			draw_hover_readout(
+				disp,
+				font_italic,
+				layout,
+				app.cursor_x,
+				app.cursor_y,
+				view == nil,
+			)
 			draw_conn(&app)
 			k2.present()
 
@@ -1061,66 +1069,114 @@ draw_conn :: proc(app: ^App) {
 //-----------------//
 
 // Full operator names for the hover readout (M10). Mirrors the op_* procs in
-// core/sim.odin; upper- and lowercase share a name (only the run cadence
-// differs). Returns "" for non-operator cells (`.`, digits, bare data).
+// core/sim.odin; lowercase operators are qualified because they only run next
+// to a bang. Returns "" for non-operator cells (`.`, digits, bare data).
 operator_name :: proc(glyph: u8) -> string {
-	g := glyph
-	if g >= 'a' && g <= 'z' {
-		g -= 'a' - 'A' // fold to uppercase; the name is case-independent
-	}
-	switch g {
+	switch glyph {
 	case 'A':
 		return "add"
+	case 'a':
+		return "add (bang)"
 	case 'B':
 		return "subtract"
+	case 'b':
+		return "subtract (bang)"
 	case 'C':
 		return "clock"
+	case 'c':
+		return "clock (bang)"
 	case 'D':
 		return "delay"
+	case 'd':
+		return "delay (bang)"
 	case 'E':
 		return "move east"
+	case 'e':
+		return "move east (bang)"
 	case 'F':
 		return "if"
+	case 'f':
+		return "if (bang)"
 	case 'G':
 		return "generator"
+	case 'g':
+		return "generator (bang)"
 	case 'H':
 		return "halt"
+	case 'h':
+		return "halt (bang)"
 	case 'I':
 		return "increment"
+	case 'i':
+		return "increment (bang)"
 	case 'J':
 		return "jump"
+	case 'j':
+		return "jump (bang)"
 	case 'K':
 		return "konkat"
+	case 'k':
+		return "konkat (bang)"
 	case 'L':
 		return "lesser"
+	case 'l':
+		return "lesser (bang)"
 	case 'M':
 		return "multiply"
+	case 'm':
+		return "multiply (bang)"
 	case 'N':
 		return "move north"
+	case 'n':
+		return "move north (bang)"
 	case 'O':
 		return "offset (read)"
+	case 'o':
+		return "offset (read, bang)"
 	case 'P':
 		return "push"
+	case 'p':
+		return "push (bang)"
 	case 'Q':
 		return "query"
+	case 'q':
+		return "query (bang)"
 	case 'R':
 		return "random"
+	case 'r':
+		return "random (bang)"
 	case 'S':
 		return "move south"
+	case 's':
+		return "move south (bang)"
 	case 'T':
 		return "track"
+	case 't':
+		return "track (bang)"
 	case 'U':
 		return "euclid"
+	case 'u':
+		return "euclid (bang)"
 	case 'V':
 		return "variable"
+	case 'v':
+		return "variable (bang)"
 	case 'W':
 		return "move west"
+	case 'w':
+		return "move west (bang)"
 	case 'X':
 		return "teleport"
+	case 'x':
+		return "teleport (bang)"
 	case 'Y':
 		return "yump"
+	case 'y':
+		return "yump (bang)"
 	case 'Z':
 		return "lerp"
+	case 'z':
+		return "lerp (bang)"
 	case '*':
 		return "bang"
 	case '#':
@@ -1157,21 +1213,33 @@ hover_cell :: proc(grid: orca.Grid, layout: Layout) -> (cx, cy: int) {
 	return cx, cy
 }
 
-// M10: when the mouse rests on an operator, show its full name in italics in
-// the lower-right corner. Nothing off an operator (empty cells, digits, and
-// bare data have no readout). Drawn on its own line just above the status bar
-// (right-aligned) so a long status line can't cover it. `font` is the bundled
-// italic face (see FONT_ITALIC_DATA / main).
+// M10: show the operator beneath the mouse, falling back to the keyboard edit
+// cursor when the pointer is not on an operator. The fallback is disabled while
+// viewing another player's grid because the local edit cursor is not displayed
+// there. Drawn on its own line just above the status bar (right-aligned) so a
+// long status line can't cover it. `font` is the bundled italic face (see
+// FONT_ITALIC_DATA / main).
 //
 // Note: the readout only appears while the window is focused — macOS delivers
 // mouse-moved events to the key window only, so an unfocused window reports a
 // stale pointer.
-draw_hover_readout :: proc(grid: orca.Grid, font: k2.Font, layout: Layout) {
+draw_hover_readout :: proc(
+	grid: orca.Grid,
+	font: k2.Font,
+	layout: Layout,
+	cursor_x, cursor_y: int,
+	cursor_fallback: bool,
+) {
 	cx, cy := hover_cell(grid, layout)
-	if cx < 0 {
-		return
+	name := ""
+	if cx >= 0 {
+		name = operator_name(orca.grid_get(grid, cx, cy))
 	}
-	name := operator_name(orca.grid_get(grid, cx, cy))
+	if name == "" && cursor_fallback &&
+	   cursor_x >= 0 && cursor_x < grid.width &&
+	   cursor_y >= 0 && cursor_y < grid.height {
+		name = operator_name(orca.grid_get(grid, cursor_x, cursor_y))
+	}
 	if name == "" {
 		return
 	}
@@ -1180,7 +1248,7 @@ draw_hover_readout :: proc(grid: orca.Grid, font: k2.Font, layout: Layout) {
 	x := f32(k2.get_screen_width()) - MARGIN - w
 	// One line above the status bar (which sits at height - size - MARGIN).
 	y := f32(k2.get_screen_height()) - size*2 - MARGIN
-	k2.draw_text(name, {x, y}, size, STATUS, font)
+	k2.draw_text(name, {x, y}, size, SECONDARY, font)
 }
 
 // Muted fill behind the selected rectangle, drawn under the glyphs.

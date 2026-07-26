@@ -526,8 +526,9 @@ glyph→name map today; both derive it from the same list. The names mirror the
 | `!` | midi cc | `?` | pitch bend |
 | `;` | udp | `=` | osc |
 
-Upper- and lowercase share a name (only the run cadence differs). Non-operator
-cells — `.`, digits, and bare data — have no readout.
+Lowercase letters append `(bang)` to the name to expose their distinct run
+cadence (`C` is `clock`, while `c` is `clock (bang)`). Non-operator cells —
+`.`, digits, and bare data — have no readout.
 
 **Placement.**
 - **Native** — bottom-right of the window, right-aligned, drawn with karl2d at
@@ -550,15 +551,17 @@ cells — `.`, digits, and bare data — have no readout.
 - No new wire messages, no `core` changes, no simulation impact.
 
 **Deliverable:** hovering (native mouse / web pointer) over an operator shows its
-full name in italics in the lower-right corner of both clients; moving off an
-operator clears it.
+full name in italics in the lower-right corner of both clients. When the pointer
+is not on an operator, the keyboard edit cursor provides the same readout, so
+arrow-key movement also teaches the operator beneath the cursor.
 
 > **Landed.** Both clients render the readout in italics: native via a
 > pointer→cell hit test and a right-aligned draw (`operator_name` +
 > `draw_hover_readout` in `src/main.odin`) using a bundled `JetBrainsMono-Italic`
 > face, on its own line above the status bar; web via a client-side `OpReadout`
 > JS hook driving a `position: fixed` italic corner element (`app.js` +
-> `room_live.ex`).
+> `room_live.ex`). Both fall back to the keyboard edit cursor when the pointer
+> is not resting on an operator.
 
 ## Justfile commands
 

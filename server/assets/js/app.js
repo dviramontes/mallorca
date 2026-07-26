@@ -30,7 +30,8 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 // Capture clipboard paste and forward the text to the LiveView (multi-line
 // Orca blocks). Single-character typing still goes through phx-window-keydown.
 // M10 operator names for the hover readout — the JS twin of `operator_name`
-// in src/main.odin. Upper- and lowercase share a name; non-operators have none.
+// in src/main.odin. Lowercase operators are bang-triggered; non-operators have
+// no name.
 const OP_NAMES = {
   A: "add", B: "subtract", C: "clock", D: "delay",
   E: "move east", F: "if", G: "generator", H: "halt",
@@ -45,8 +46,10 @@ const OP_NAMES = {
 
 function operatorName(ch) {
   if (!ch) return ""
-  const u = ch.length === 1 && ch >= "a" && ch <= "z" ? ch.toUpperCase() : ch
-  return OP_NAMES[u] || ""
+  const lower = ch.length === 1 && ch >= "a" && ch <= "z"
+  const name = OP_NAMES[lower ? ch.toUpperCase() : ch] || ""
+  if (!name || !lower) return name
+  return name === "offset (read)" ? "offset (read, bang)" : `${name} (bang)`
 }
 
 const Hooks = {
@@ -68,20 +71,38 @@ const Hooks = {
 
   // Hover readout (M10): show the hovered operator's full name in the corner
   // readout element. Purely client-side (delegated listeners, no round-trip);
-  // survives grid re-renders since the listeners live on the container.
+  // falls back to the keyboard cursor and survives grid re-renders since the
+  // listeners live on the container.
   OpReadout: {
     mounted() {
       this.out = document.getElementById("op-readout")
+      this.showCursor = () => {
+        const cursor = this.el.querySelector("[data-edit-cursor]")
+        if (this.out) this.out.textContent = operatorName(cursor?.dataset.glyph)
+      }
+      this.showActive = () => {
+        const hovered = this.el.querySelector("[data-glyph]:hover")
+        if (hovered && this.out) {
+          this.out.textContent = operatorName(hovered.dataset.glyph)
+        } else {
+          this.showCursor()
+        }
+      }
       this.over = (e) => {
-        const span = e.target.closest("span")
-        if (!span || !this.el.contains(span)) return
-        if (this.out) this.out.textContent = operatorName((span.textContent || "").trim())
+        const cell = e.target.closest("[data-glyph]")
+        if (!cell || !this.el.contains(cell)) return
+        if (this.out) this.out.textContent = operatorName(cell.dataset.glyph)
       }
       this.out_ = (e) => {
-        if (this.out && !this.el.contains(e.relatedTarget)) this.out.textContent = ""
+        const nextCell = e.relatedTarget?.closest?.("[data-glyph]")
+        if (!nextCell || !this.el.contains(nextCell)) this.showCursor()
       }
       this.el.addEventListener("mouseover", this.over)
       this.el.addEventListener("mouseout", this.out_)
+      this.showActive()
+    },
+    updated() {
+      this.showActive()
     },
     destroyed() {
       this.el.removeEventListener("mouseover", this.over)
@@ -149,4 +170,3 @@ if (process.env.NODE_ENV === "development") {
     window.liveReloader = reloader
   })
 }
-

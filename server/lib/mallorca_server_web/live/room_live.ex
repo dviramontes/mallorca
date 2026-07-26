@@ -196,9 +196,11 @@ defmodule MallorcaServerWeb.RoomLive do
           <div :for={{row, y} <- Enum.with_index(@rows)} class="flex">
             <span
               :for={x <- 0..(@gw - 1)}
+              data-glyph={String.at(row, x)}
+              data-edit-cursor={if(x == @cx and y == @cy, do: "true")}
               class={[
                 "inline-block w-[1ch] text-center",
-                (x == @cx and y == @cy) && "bg-primary text-primary-content",
+                (x == @cx and y == @cy) && "bg-secondary text-secondary-content",
                 String.at(row, x) == "." && "opacity-25"
               ]}
             >{String.at(row, x)}</span>
