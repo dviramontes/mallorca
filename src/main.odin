@@ -102,6 +102,7 @@ App :: struct {
 	insert_mode:  bool, // typing advances the cursor when true
 	audition:     bool, // Enter held: sounding the middle-C audition tone
 	debug:        bool, // --debug: log edit/selection/clipboard activity
+	show_guide:   bool, // Ctrl/Cmd+G operator overview
 
 	// Cursor blink: `blink` accumulates seconds and toggles visibility every
 	// BLINK_INTERVAL; movement resets it so the cursor is always shown while
@@ -331,6 +332,7 @@ main :: proc() {
 				view == nil,
 			)
 			draw_conn(&app)
+			draw_operator_overview(&app, font)
 			k2.present()
 
 			free_all(context.temp_allocator)
@@ -351,6 +353,7 @@ main :: proc() {
 REPEAT_KEYS :: [?]k2.Keyboard_Key{.Left, .Right, .Up, .Down, .Backspace}
 REPEAT_DELAY :: 0.35
 REPEAT_RATE :: 0.05
+AUDITION_NOTE :: u8(60)
 
 ctrl_held :: proc() -> bool {
 	// Accept Cmd on macOS as well as Ctrl.
@@ -411,10 +414,26 @@ GLYPH_KEYS :: [?]Glyph_Key{
 }
 
 handle_input :: proc(app: ^App) {
+	// Orca's operator guide is a modal overlay: Ctrl/Cmd+G toggles it from
+	// any view, Escape closes it, and no edit/play input leaks through.
+	if ctrl_held() && k2.key_went_down(.G) {
+		app.show_guide = !app.show_guide
+		if app.show_guide && app.audition {
+			midi_note_off(&app.midi, 0, AUDITION_NOTE)
+			app.audition = false
+		}
+		return
+	}
+	if app.show_guide {
+		if k2.key_went_down(.Escape) {
+			app.show_guide = false
+		}
+		return
+	}
+
 	// Audition tone: hold Enter to sound middle C (MIDI note 60) on channel
 	// 0, whether playing or not — a quick way to check the MIDI output and
 	// synth routing. The play border lights while it sounds.
-	AUDITION_NOTE :: u8(60)
 	held := k2.key_is_held(.Enter)
 	if held && !app.audition {
 		midi_note_on(&app.midi, 0, AUDITION_NOTE, 100)
@@ -1197,6 +1216,121 @@ operator_name :: proc(glyph: u8) -> string {
 		return "osc"
 	}
 	return ""
+}
+
+//--------------------------//
+// OPERATOR OVERVIEW GUIDE  //
+//--------------------------//
+
+Operator_Overview_Entry :: struct {
+	glyph: string,
+	text:  string,
+}
+
+// Canonical summaries from the original Orca guide, adjusted only where
+// Mallorca uses the orca-c operator name (jump, euclid, yump).
+OPERATOR_OVERVIEW :: [?]Operator_Overview_Entry{
+	{"A", "add(a b): Sum inputs."},
+	{"B", "subtract(a b): Difference of inputs."},
+	{"C", "clock(rate mod): Frame modulo."},
+	{"D", "delay(rate mod): Bang on modulo."},
+	{"E", "east: Move east, or bang."},
+	{"F", "if(a b): Bang when inputs match."},
+	{"G", "generator(x y len): Write at offset."},
+	{"H", "halt: Stop southward operand."},
+	{"I", "increment(step mod): Increment below."},
+	{"J", "jump(val): Output north operand."},
+	{"K", "konkat(len): Read variables."},
+	{"L", "less(a b): Output smallest input."},
+	{"M", "multiply(a b): Product of inputs."},
+	{"N", "north: Move north, or bang."},
+	{"O", "read(x y read): Read at offset."},
+	{"P", "push(len key val): Write east."},
+	{"Q", "query(x y len): Read at offset."},
+	{"R", "random(min max): Random value."},
+	{"S", "south: Move south, or bang."},
+	{"T", "track(key len val): Read east."},
+	{"U", "euclid(step max): Euclidean bang."},
+	{"V", "variable(write read): Read/write var."},
+	{"W", "west: Move west, or bang."},
+	{"X", "write(x y val): Write at offset."},
+	{"Y", "yump(val): Output west operand."},
+	{"Z", "lerp(rate target): Move toward input."},
+	{"*", "bang: Trigger neighboring operators."},
+	{"#", "comment: Halts a line."},
+	{":", "midi(ch oct note vel len): Send note."},
+	{"%", "mono(ch oct note vel len): Send mono."},
+	{"!", "cc(channel knob value): Send MIDI CC."},
+	{"?", "pitch bend(channel value): Send bend."},
+	{";", "udp: Send UDP message."},
+	{"=", "osc(path): Send OSC message."},
+}
+
+// Full-window guide modeled on Orca's Cmd/Ctrl+G overview. Try one through
+// four columns and choose whichever yields the largest type that fits both
+// available dimensions.
+draw_operator_overview :: proc(app: ^App, font: k2.Font) {
+	if !app.show_guide {
+		return
+	}
+
+	screen_w := f32(k2.get_screen_width())
+	screen_h := f32(k2.get_screen_height())
+	k2.draw_rect({0, 0, screen_w, screen_h}, k2.Color{0x17, 0x17, 0x17, 0xf8})
+
+	padding := f32(MARGIN)
+	text_x_em := f32(1.8)
+	line_h_em := f32(1.3)
+	header_size_em := f32(1.25)
+	header_y_em := f32(1.75)
+
+	// Measure at a large reference size for stable per-em widths.
+	measure_size := f32(100)
+	max_line_em: f32
+	for entry in OPERATOR_OVERVIEW {
+		text_em := k2.measure_text(entry.text, measure_size, font).x / measure_size
+		max_line_em = max(max_line_em, text_x_em + text_em)
+	}
+
+	font_size: f32
+	columns := 1
+	for candidate_columns in 1 ..= 4 {
+		candidate_rows := (len(OPERATOR_OVERVIEW) + candidate_columns - 1) / candidate_columns
+		candidate_column_w := (screen_w - padding*2) / f32(candidate_columns)
+		width_size := max(candidate_column_w - padding, f32(1)) / max_line_em
+		height_em :=
+			header_size_em*header_y_em +
+			f32(candidate_rows - 1)*line_h_em +
+			1
+		height_size := max(screen_h - padding*2, f32(1)) / height_em
+		candidate_size := min(width_size, height_size)
+		if candidate_size > font_size {
+			font_size = candidate_size
+			columns = candidate_columns
+		}
+	}
+	font_size = max(font_size, f32(8))
+
+	rows := (len(OPERATOR_OVERVIEW) + columns - 1) / columns
+	header_size := font_size * header_size_em
+	line_gap := font_size * (line_h_em - 1)
+	line_h := font_size + line_gap
+	column_w := (screen_w - padding*2) / f32(columns)
+
+	k2.draw_text("OPERATORS", {padding, padding}, header_size, SECONDARY, font)
+	hint := "Ctrl/Cmd+G or Esc to close"
+	hint_w := k2.measure_text(hint, font_size, font).x
+	k2.draw_text(hint, {screen_w - padding - hint_w, padding}, font_size, STATUS, font)
+
+	y0 := padding + header_size*1.75
+	for entry, i in OPERATOR_OVERVIEW {
+		column := i / rows
+		row := i % rows
+		x := padding + f32(column)*column_w
+		y := y0 + f32(row)*line_h
+		k2.draw_text(entry.glyph, {x, y}, font_size, SECONDARY, font)
+		k2.draw_text(entry.text, {x + font_size*text_x_em, y}, font_size, FG, font)
+	}
 }
 
 // Map the mouse pointer to a grid cell (inverse of the cell-rect layout the

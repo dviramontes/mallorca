@@ -23,6 +23,7 @@ people join a shared room from a browser and live-code together. See
 - Live MIDI output via CoreMIDI, with tick-accurate note durations
 - Network mode: host a room natively while others join and jam from a browser
 - Hover an operator to read its full name (native and browser)
+- Open a complete operator overview with `Cmd/Ctrl+G`
 - Visual highlighting for inputs, outputs, locked cells, and haste inputs
 - Selection with copy/cut/paste, undo, interactive grid resize, and BPM control
 - Headless core package with tests independent of the graphical application
@@ -119,6 +120,7 @@ plays through its MIDI output. The dashboard at `http://localhost:4000/admin`
 | `Cmd/Ctrl` + `C` / `X` / `V` | Copy / cut / paste the selection |
 | `Cmd/Ctrl` + `Z` | Undo the last edit |
 | `Cmd/Ctrl` + `F` | Advance one simulation frame |
+| `Cmd/Ctrl` + `G` | Toggle the operator overview |
 | `Cmd/Ctrl` + `S` | Save the grid |
 | `Cmd/Ctrl` + `Q` | Quit |
 
