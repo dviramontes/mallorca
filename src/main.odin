@@ -59,7 +59,7 @@ OUTPUT_FG :: k2.Color{0x17, 0x17, 0x17, 0xff}
 INPUT :: k2.Color{0x6b, 0xd9, 0xd9, 0xff} // cyan-ish: operand cells
 HASTE :: k2.Color{0x3f, 0x9d, 0x9d, 0xff} // darker cyan: hasted operands
 LOCKED :: k2.Color{0x70, 0x70, 0x70, 0xff} // comment/data cells
-PROJECTED :: k2.Color{224, 191, 100, 191} // Orca yellow at 75% alpha
+PROJECTED :: k2.Color{224, 191, 100, 230} // Orca yellow at 90% alpha
 PROJECTED_BORDER_THICKNESS :: f32(2)
 
 PLAY_BORDER :: k2.Color{0x5d, 0xd0, 0x5d, 0xff} // green frame while playing
