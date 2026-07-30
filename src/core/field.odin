@@ -14,9 +14,13 @@ Grid :: struct {
 	height: int,
 }
 
-make_grid :: proc(width, height: int, fill := EMPTY_GLYPH, allocator := context.allocator) -> Grid {
+make_grid :: proc(
+	width, height: int,
+	fill := EMPTY_GLYPH,
+	allocator := context.allocator,
+) -> Grid {
 	assert(width > 0 && height > 0)
-	cells := make([]u8, width*height, allocator)
+	cells := make([]u8, width * height, allocator)
 	for &c in cells {
 		c = fill
 	}
@@ -32,14 +36,14 @@ grid_get :: proc(grid: Grid, x, y: int) -> u8 {
 	if x < 0 || y < 0 || x >= grid.width || y >= grid.height {
 		return EMPTY_GLYPH
 	}
-	return grid.cells[y*grid.width + x]
+	return grid.cells[y * grid.width + x]
 }
 
 grid_set :: proc(grid: Grid, x, y: int, glyph: u8) {
 	if x < 0 || y < 0 || x >= grid.width || y >= grid.height {
 		return
 	}
-	grid.cells[y*grid.width + x] = glyph
+	grid.cells[y * grid.width + x] = glyph
 }
 
 // Return a new grid of (width, height), copying the overlapping top-left
@@ -49,7 +53,7 @@ resize_grid :: proc(src: Grid, width, height: int, allocator := context.allocato
 	dst := make_grid(width, height, allocator = allocator)
 	for y in 0 ..< min(height, src.height) {
 		for x in 0 ..< min(width, src.width) {
-			dst.cells[y*width + x] = src.cells[y*src.width + x]
+			dst.cells[y * width + x] = src.cells[y * src.width + x]
 		}
 	}
 	return dst
@@ -74,7 +78,7 @@ parse_field :: proc(data: []u8, allocator := context.allocator) -> (grid: Grid, 
 		at_end := i == len(data)
 		if at_end || data[i] == '\n' {
 			line_len := i - line_start
-			if line_len > 0 && data[i-1] == '\r' {
+			if line_len > 0 && data[i - 1] == '\r' {
 				line_len -= 1
 			}
 			if line_len > 0 {
@@ -92,7 +96,7 @@ parse_field :: proc(data: []u8, allocator := context.allocator) -> (grid: Grid, 
 				}
 			} else if !at_end && width > 0 {
 				// blank line in the middle of the grid
-				if i+1 < len(data) {
+				if i + 1 < len(data) {
 					return {}, .Not_A_Rectangle
 				}
 			}

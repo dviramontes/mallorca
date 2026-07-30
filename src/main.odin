@@ -3,14 +3,15 @@
 // delivered via CoreMIDI (see midi.odin). OSC and UDP remain deferred.
 package main
 
+
+import k2 "../karl2d" // macOS-only for now; gate with #+build when porting
+import orca "core"
 import "core:fmt"
 import "core:math"
 import "core:os"
 import "core:slice"
 import "core:strings"
-import NS "core:sys/darwin/Foundation" // macOS-only for now; gate with #+build when porting
-import k2 "../karl2d"
-import orca "core"
+import NS "core:sys/darwin/Foundation"
 
 FONT_DATA :: #load("../assets/JetBrainsMono-Regular.ttf")
 // Italic face, used only for the M10 hover readout (see draw_hover_readout).
@@ -73,7 +74,7 @@ SELECT :: k2.Color{0x2c, 0x3e, 0x63, 0xff} // muted blue behind selected cells
 // Remote-view glyph palette (M8): when the host window shows a remote player's
 // grid, its input renders in one of these so it reads as "not the host's white,
 // and not that other player." Marks (input/output/etc.) still override per cell.
-REMOTE_TINTS :: [?]k2.Color{
+REMOTE_TINTS :: [?]k2.Color {
 	{0xe6, 0x9a, 0x4c, 0xff}, // orange
 	{0xa7, 0x8b, 0xde, 0xff}, // violet
 	{0x6c, 0xc2, 0x77, 0xff}, // green
@@ -269,8 +270,9 @@ main :: proc() {
 		delete(app.status_msg)
 	}
 
-	window_w := MARGIN*2 + app.grid.width*(INITIAL_FONT_SIZE * 3 / 5)
-	window_h := MARGIN*2 + app.grid.height*(INITIAL_FONT_SIZE * 23 / 20) + INITIAL_FONT_SIZE + MARGIN
+	window_w := MARGIN * 2 + app.grid.width * (INITIAL_FONT_SIZE * 3 / 5)
+	window_h :=
+		MARGIN * 2 + app.grid.height * (INITIAL_FONT_SIZE * 23 / 20) + INITIAL_FONT_SIZE + MARGIN
 	k2.init(window_w, window_h, "mallorca", {window_mode = .Windowed_Resizable})
 	defer k2.shutdown()
 
@@ -323,14 +325,7 @@ main :: proc() {
 			}
 			draw_legend(&app, font, layout)
 			draw_status(&app, font, layout)
-			draw_hover_readout(
-				disp,
-				font_italic,
-				layout,
-				app.cursor_x,
-				app.cursor_y,
-				view == nil,
-			)
+			draw_hover_readout(disp, font_italic, layout, app.cursor_x, app.cursor_y, view == nil)
 			draw_conn(&app)
 			draw_operator_overview(&app, font)
 			k2.present()
@@ -396,7 +391,7 @@ Glyph_Key :: struct {
 	shifted: u8, // 0 = no glyph with shift
 }
 
-GLYPH_KEYS :: [?]Glyph_Key{
+GLYPH_KEYS :: [?]Glyph_Key {
 	{.N0, '0', 0},
 	{.N1, '1', '!'},
 	{.N2, '2', 0},
@@ -682,8 +677,10 @@ selection_rect :: proc(app: ^App) -> (x0, y0, x1, y1: int) {
 	if !app.sel_active {
 		return app.cursor_x, app.cursor_y, app.cursor_x, app.cursor_y
 	}
-	return min(app.sel_x, app.cursor_x), min(app.sel_y, app.cursor_y),
-		max(app.sel_x, app.cursor_x), max(app.sel_y, app.cursor_y)
+	return min(
+		app.sel_x,
+		app.cursor_x,
+	), min(app.sel_y, app.cursor_y), max(app.sel_x, app.cursor_x), max(app.sel_y, app.cursor_y)
 }
 
 select_all :: proc(app: ^App) {
@@ -697,11 +694,11 @@ copy_selection :: proc(app: ^App) {
 	x0, y0, x1, y1 := selection_rect(app)
 	w, h := x1 - x0 + 1, y1 - y0 + 1
 	delete(app.clip_cells)
-	app.clip_cells = make([]u8, w*h)
+	app.clip_cells = make([]u8, w * h)
 	app.clip_w, app.clip_h = w, h
 	for y in 0 ..< h {
 		for x in 0 ..< w {
-			app.clip_cells[y*w + x] = orca.grid_get(app.grid, x0 + x, y0 + y)
+			app.clip_cells[y * w + x] = orca.grid_get(app.grid, x0 + x, y0 + y)
 		}
 	}
 	// Mirror the block to the system pasteboard (rows joined by '\n') so it can
@@ -711,7 +708,14 @@ copy_selection :: proc(app: ^App) {
 	if app.debug {
 		fmt.eprintfln(
 			"copy: sel_active=%v rect=(%d,%d)-(%d,%d) -> %dx%d %q",
-			app.sel_active, x0, y0, x1, y1, w, h, string(app.clip_cells),
+			app.sel_active,
+			x0,
+			y0,
+			x1,
+			y1,
+			w,
+			h,
+			string(app.clip_cells),
 		)
 	}
 	set_status(app, fmt.aprintf("copied %dx%d", w, h))
@@ -739,7 +743,7 @@ clip_to_text :: proc(app: ^App, allocator := context.allocator) -> string {
 		if y > 0 {
 			strings.write_byte(&b, '\n')
 		}
-		strings.write_bytes(&b, app.clip_cells[y*app.clip_w:y*app.clip_w + app.clip_w])
+		strings.write_bytes(&b, app.clip_cells[y * app.clip_w:y * app.clip_w + app.clip_w])
 	}
 	return strings.to_string(b)
 }
@@ -750,7 +754,12 @@ clip_to_text :: proc(app: ^App, allocator := context.allocator) -> string {
 paste_clip :: proc(app: ^App) {
 	if text, ok := system_clipboard_read(context.temp_allocator); ok {
 		if app.debug {
-			fmt.eprintfln("paste: system clipboard %q at cursor=(%d,%d)", text, app.cursor_x, app.cursor_y)
+			fmt.eprintfln(
+				"paste: system clipboard %q at cursor=(%d,%d)",
+				text,
+				app.cursor_x,
+				app.cursor_y,
+			)
 		}
 		paste_text(app, text)
 		return
@@ -758,7 +767,11 @@ paste_clip :: proc(app: ^App) {
 	if app.debug {
 		fmt.eprintfln(
 			"paste: internal clip=%dx%d at cursor=(%d,%d) %q",
-			app.clip_w, app.clip_h, app.cursor_x, app.cursor_y, string(app.clip_cells),
+			app.clip_w,
+			app.clip_h,
+			app.cursor_x,
+			app.cursor_y,
+			string(app.clip_cells),
 		)
 	}
 	if app.clip_w == 0 {
@@ -768,7 +781,12 @@ paste_clip :: proc(app: ^App) {
 	push_undo(app)
 	for y in 0 ..< app.clip_h {
 		for x in 0 ..< app.clip_w {
-			orca.grid_set(app.grid, app.cursor_x + x, app.cursor_y + y, app.clip_cells[y*app.clip_w + x])
+			orca.grid_set(
+				app.grid,
+				app.cursor_x + x,
+				app.cursor_y + y,
+				app.clip_cells[y * app.clip_w + x],
+			)
 		}
 	}
 	app.sel_active = false // drop the highlight so the paste is visible
@@ -920,12 +938,15 @@ dispatch_events :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note, events: []orca.Eve
 	for ev in events {
 		switch e in ev {
 		case orca.Midi_Note_Event:
-			note := u8(clamp(int(e.octave)*12 + int(e.note), 0, 127))
+			note := u8(clamp(int(e.octave) * 12 + int(e.note), 0, 127))
 			if e.mono {
 				stop_channel(midi, sus, e.channel) // '%' steals its channel
 			}
 			midi_note_on(midi, e.channel, note, e.velocity)
-			append(sus, Sus_Note{channel = e.channel, note = note, frames = max(int(e.duration), 1)})
+			append(
+				sus,
+				Sus_Note{channel = e.channel, note = note, frames = max(int(e.duration), 1)},
+			)
 		case orca.Midi_CC_Event:
 			midi_cc(midi, e.channel, e.control, e.value)
 		case orca.Midi_PB_Event:
@@ -1046,7 +1067,7 @@ Layout :: struct {
 
 // The grid always spans the full window width; cell and font size follow.
 compute_layout :: proc(grid: orca.Grid) -> Layout {
-	cell_w := (f32(k2.get_screen_width()) - MARGIN*2) / f32(grid.width)
+	cell_w := (f32(k2.get_screen_width()) - MARGIN * 2) / f32(grid.width)
 	font_size := cell_w / ADVANCE_EM
 	return Layout{cell_w = cell_w, cell_h = font_size * LINE_EM, font_size = font_size}
 }
@@ -1058,11 +1079,11 @@ draw_border :: proc(app: ^App) {
 	if !app.playing && !app.audition {
 		return
 	}
-	rect := k2.Rect{
+	rect := k2.Rect {
 		BORDER_INSET,
 		BORDER_INSET,
-		f32(k2.get_screen_width()) - BORDER_INSET*2,
-		f32(k2.get_screen_height()) - BORDER_INSET*2,
+		f32(k2.get_screen_width()) - BORDER_INSET * 2,
+		f32(k2.get_screen_height()) - BORDER_INSET * 2,
 	}
 	k2.draw_rect_outline(rect, BORDER_THICKNESS, PLAY_BORDER)
 }
@@ -1229,7 +1250,7 @@ Operator_Overview_Entry :: struct {
 
 // Canonical summaries from the original Orca guide, adjusted only where
 // Mallorca uses the orca-c operator name (jump, euclid, yump).
-OPERATOR_OVERVIEW :: [?]Operator_Overview_Entry{
+OPERATOR_OVERVIEW :: [?]Operator_Overview_Entry {
 	{"A", "add(a b): Sum inputs."},
 	{"B", "subtract(a b): Difference of inputs."},
 	{"C", "clock(rate mod): Frame modulo."},
@@ -1296,13 +1317,10 @@ draw_operator_overview :: proc(app: ^App, font: k2.Font) {
 	columns := 1
 	for candidate_columns in 1 ..= 4 {
 		candidate_rows := (len(OPERATOR_OVERVIEW) + candidate_columns - 1) / candidate_columns
-		candidate_column_w := (screen_w - padding*2) / f32(candidate_columns)
+		candidate_column_w := (screen_w - padding * 2) / f32(candidate_columns)
 		width_size := max(candidate_column_w - padding, f32(1)) / max_line_em
-		height_em :=
-			header_size_em*header_y_em +
-			f32(candidate_rows - 1)*line_h_em +
-			1
-		height_size := max(screen_h - padding*2, f32(1)) / height_em
+		height_em := header_size_em * header_y_em + f32(candidate_rows - 1) * line_h_em + 1
+		height_size := max(screen_h - padding * 2, f32(1)) / height_em
 		candidate_size := min(width_size, height_size)
 		if candidate_size > font_size {
 			font_size = candidate_size
@@ -1315,21 +1333,21 @@ draw_operator_overview :: proc(app: ^App, font: k2.Font) {
 	header_size := font_size * header_size_em
 	line_gap := font_size * (line_h_em - 1)
 	line_h := font_size + line_gap
-	column_w := (screen_w - padding*2) / f32(columns)
+	column_w := (screen_w - padding * 2) / f32(columns)
 
 	k2.draw_text("OPERATORS", {padding, padding}, header_size, SECONDARY, font)
 	hint := "Ctrl/Cmd+G or Esc to close"
 	hint_w := k2.measure_text(hint, font_size, font).x
 	k2.draw_text(hint, {screen_w - padding - hint_w, padding}, font_size, STATUS, font)
 
-	y0 := padding + header_size*1.75
+	y0 := padding + header_size * 1.75
 	for entry, i in OPERATOR_OVERVIEW {
 		column := i / rows
 		row := i % rows
-		x := padding + f32(column)*column_w
-		y := y0 + f32(row)*line_h
+		x := padding + f32(column) * column_w
+		y := y0 + f32(row) * line_h
 		k2.draw_text(entry.glyph, {x, y}, font_size, SECONDARY, font)
-		k2.draw_text(entry.text, {x + font_size*text_x_em, y}, font_size, FG, font)
+		k2.draw_text(entry.text, {x + font_size * text_x_em, y}, font_size, FG, font)
 	}
 }
 
@@ -1371,9 +1389,12 @@ draw_hover_readout :: proc(
 	if cx >= 0 {
 		name = operator_name(orca.grid_get(grid, cx, cy))
 	}
-	if name == "" && cursor_fallback &&
-	   cursor_x >= 0 && cursor_x < grid.width &&
-	   cursor_y >= 0 && cursor_y < grid.height {
+	if name == "" &&
+	   cursor_fallback &&
+	   cursor_x >= 0 &&
+	   cursor_x < grid.width &&
+	   cursor_y >= 0 &&
+	   cursor_y < grid.height {
 		name = operator_name(orca.grid_get(grid, cursor_x, cursor_y))
 	}
 	if name == "" {
@@ -1383,7 +1404,7 @@ draw_hover_readout :: proc(
 	w := k2.measure_text(name, size, font).x
 	x := f32(k2.get_screen_width()) - MARGIN - w
 	// One line above the status bar (which sits at height - size - MARGIN).
-	y := f32(k2.get_screen_height()) - size*2 - MARGIN
+	y := f32(k2.get_screen_height()) - size * 2 - MARGIN
 	k2.draw_text(name, {x, y}, size, SECONDARY, font)
 }
 
@@ -1393,11 +1414,11 @@ draw_selection :: proc(app: ^App, layout: Layout) {
 		return
 	}
 	x0, y0, x1, y1 := selection_rect(app)
-	rect := k2.Rect{
-		MARGIN + f32(x0)*layout.cell_w,
-		MARGIN + f32(y0)*layout.cell_h,
-		f32(x1 - x0 + 1)*layout.cell_w,
-		f32(y1 - y0 + 1)*layout.cell_h,
+	rect := k2.Rect {
+		MARGIN + f32(x0) * layout.cell_w,
+		MARGIN + f32(y0) * layout.cell_h,
+		f32(x1 - x0 + 1) * layout.cell_w,
+		f32(y1 - y0 + 1) * layout.cell_h,
 	}
 	k2.draw_rect(rect, SELECT)
 }
@@ -1405,13 +1426,19 @@ draw_selection :: proc(app: ^App, layout: Layout) {
 // `base` is the default glyph color (the host's white for our grid; a remote
 // player's tint for their grid). Empty-cell ruler/dim and per-cell marks
 // override it exactly as before.
-draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: Layout, base: k2.Color) {
+draw_grid :: proc(
+	grid: orca.Grid,
+	marks: []orca.Mark,
+	font: k2.Font,
+	layout: Layout,
+	base: k2.Color,
+) {
 	buf: [1]u8
 	for y in 0 ..< grid.height {
 		for x in 0 ..< grid.width {
 			glyph := orca.grid_get(grid, x, y)
-			mark := marks[y*grid.width + x]
-			pos := k2.Vec2{MARGIN + f32(x)*layout.cell_w, MARGIN + f32(y)*layout.cell_h}
+			mark := marks[y * grid.width + x]
+			pos := k2.Vec2{MARGIN + f32(x) * layout.cell_w, MARGIN + f32(y) * layout.cell_h}
 			color := base
 			if glyph == orca.EMPTY_GLYPH {
 				// Ruler overlay: '+' every 8x8 intersection, dim '.' elsewhere.
@@ -1443,19 +1470,19 @@ draw_grid :: proc(grid: orca.Grid, marks: []orca.Mark, font: k2.Font, layout: La
 				// Draw only exposed edges so adjacent projected cells read as
 				// one destination region rather than a row of boxed cells.
 				thickness := PROJECTED_BORDER_THICKNESS
-				if y == 0 || .Projected not_in marks[(y - 1)*grid.width + x] {
+				if y == 0 || .Projected not_in marks[(y - 1) * grid.width + x] {
 					k2.draw_rect({pos.x, pos.y, layout.cell_w, thickness}, PROJECTED)
 				}
-				if y == grid.height - 1 || .Projected not_in marks[(y + 1)*grid.width + x] {
+				if y == grid.height - 1 || .Projected not_in marks[(y + 1) * grid.width + x] {
 					k2.draw_rect(
 						{pos.x, pos.y + layout.cell_h - thickness, layout.cell_w, thickness},
 						PROJECTED,
 					)
 				}
-				if x == 0 || .Projected not_in marks[y*grid.width + x - 1] {
+				if x == 0 || .Projected not_in marks[y * grid.width + x - 1] {
 					k2.draw_rect({pos.x, pos.y, thickness, layout.cell_h}, PROJECTED)
 				}
-				if x == grid.width - 1 || .Projected not_in marks[y*grid.width + x + 1] {
+				if x == grid.width - 1 || .Projected not_in marks[y * grid.width + x + 1] {
 					k2.draw_rect(
 						{pos.x + layout.cell_w - thickness, pos.y, thickness, layout.cell_h},
 						PROJECTED,
@@ -1477,7 +1504,10 @@ draw_cursor :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	if glyph == orca.EMPTY_GLYPH {
 		glyph = '@'
 	}
-	pos := k2.Vec2{MARGIN + f32(app.cursor_x)*layout.cell_w, MARGIN + f32(app.cursor_y)*layout.cell_h}
+	pos := k2.Vec2 {
+		MARGIN + f32(app.cursor_x) * layout.cell_w,
+		MARGIN + f32(app.cursor_y) * layout.cell_h,
+	}
 	rect := k2.Rect{pos.x, pos.y, layout.cell_w, layout.cell_h}
 	k2.draw_rect(rect, CURSOR_BG)
 	buf := [1]u8{glyph}
@@ -1562,7 +1592,7 @@ draw_jam_overlay :: proc(app: ^App, font: k2.Font, layout: Layout) {
 				if orca.grid_get(app.grid, x, y) != orca.EMPTY_GLYPH {
 					continue
 				}
-				pos := k2.Vec2{MARGIN + f32(x)*layout.cell_w, MARGIN + f32(y)*layout.cell_h}
+				pos := k2.Vec2{MARGIN + f32(x) * layout.cell_w, MARGIN + f32(y) * layout.cell_h}
 				buf[0] = glyph
 				k2.draw_text(string(buf[:]), pos, layout.font_size, color, font)
 			}
@@ -1586,15 +1616,15 @@ draw_legend :: proc(app: ^App, font: k2.Font, layout: Layout) {
 
 	size := layout.font_size * STATUS_SCALE
 	// One line above the status line (status sits at height - size - MARGIN).
-	y := f32(k2.get_screen_height()) - size*2 - MARGIN - size*0.4
+	y := f32(k2.get_screen_height()) - size * 2 - MARGIN - size * 0.4
 	x := f32(MARGIN)
 	dot := size * 0.6
 	for sim in order {
 		name := sim.name if sim.name != "" else "player"
 		// Filled swatch in the player's tint, then their name in the same color.
-		k2.draw_rect(k2.Rect{x, y + (size - dot)*0.5, dot, dot}, remote_tint(sim.tint))
-		x += dot + size*0.35
+		k2.draw_rect(k2.Rect{x, y + (size - dot) * 0.5, dot, dot}, remote_tint(sim.tint))
+		x += dot + size * 0.35
 		k2.draw_text(name, {x, y}, size, remote_tint(sim.tint), font)
-		x += f32(len(name))*size*ADVANCE_EM + size*1.1
+		x += f32(len(name)) * size * ADVANCE_EM + size * 1.1
 	}
 }
