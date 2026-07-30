@@ -4,18 +4,18 @@
 package core
 
 Mark_Flag :: enum u8 {
-	Input,       // cell is read as an operand
-	Output,      // cell is written as a result
+	Input, // cell is read as an operand
+	Output, // cell is written as a result
 	Haste_Input, // operand read on the hasted (left/upper) side
-	Lock,        // cell must not execute as an operator this tick
-	Sleep,       // cell was just written; skip execution this tick
-	Projected,   // cell is inside a generator's destination region
+	Lock, // cell must not execute as an operator this tick
+	Sleep, // cell was just written; skip execution this tick
+	Projected, // cell is inside a generator's destination region
 }
 
-Mark :: bit_set[Mark_Flag; u8]
+Mark :: bit_set[Mark_Flag;u8]
 
 make_marks :: proc(grid: Grid, allocator := context.allocator) -> []Mark {
-	return make([]Mark, grid.width*grid.height, allocator)
+	return make([]Mark, grid.width * grid.height, allocator)
 }
 
 clear_marks :: proc(marks: []Mark) {

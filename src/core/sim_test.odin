@@ -284,9 +284,9 @@ test_marks_ports :: proc(t: ^testing.T) {
 	// A: hasted left operand, normal right operand, locking output.
 	grid, marks := tick_marks(t, "1A2\n...\n")
 	w := grid.width
-	testing.expect_value(t, marks[0*w + 0], Mark{.Input, .Haste_Input, .Lock})
-	testing.expect_value(t, marks[0*w + 2], Mark{.Input, .Lock})
-	testing.expect_value(t, marks[1*w + 1], Mark{.Output, .Lock})
+	testing.expect_value(t, marks[0 * w + 0], Mark{.Input, .Haste_Input, .Lock})
+	testing.expect_value(t, marks[0 * w + 2], Mark{.Input, .Lock})
+	testing.expect_value(t, marks[1 * w + 1], Mark{.Output, .Lock})
 }
 
 @(test)
@@ -294,7 +294,7 @@ test_marks_generator_nonlocking :: proc(t: ^testing.T) {
 	// G's projected output is nonlocking, stunned, and identified for rendering.
 	grid, marks := tick_marks(t, "..1G5\n.....\n")
 	w := grid.width
-	testing.expect_value(t, marks[1*w + 3], Mark{.Output, .Sleep, .Projected})
+	testing.expect_value(t, marks[1 * w + 3], Mark{.Output, .Sleep, .Projected})
 }
 
 @(test)

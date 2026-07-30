@@ -6,13 +6,13 @@
 // the Net_Conn read/write primitives here.
 package main
 
+import orca "core"
 import "core:encoding/json"
 import "core:fmt"
 import "core:net"
 import "core:os"
 import "core:strings"
 import "core:time"
-import orca "core"
 
 NET_DEFAULT_PORT :: 4001
 
@@ -24,7 +24,10 @@ Net_Conn :: struct {
 }
 
 net_dial :: proc(port: int = NET_DEFAULT_PORT) -> (conn: Net_Conn, ok: bool) {
-	endpoint := net.Endpoint{address = net.IP4_Loopback, port = port}
+	endpoint := net.Endpoint {
+		address = net.IP4_Loopback,
+		port    = port,
+	}
 	sock, err := net.dial_tcp(endpoint)
 	if err != nil {
 		fmt.eprintfln("net: dial 127.0.0.1:%d failed: %v", port, err)
@@ -93,7 +96,14 @@ Welcome_Player :: struct {
 // returns the room code and any players already present. Shared by the spike
 // and host modes.
 @(private = "file")
-net_hello :: proc(c: ^Net_Conn, room := "") -> (assigned: string, players: []Welcome_Player, ok: bool) {
+net_hello :: proc(
+	c: ^Net_Conn,
+	room := "",
+) -> (
+	assigned: string,
+	players: []Welcome_Player,
+	ok: bool,
+) {
 	// Build via concatenation, not fmt: Odin's fmt treats '{' as a directive and
 	// would mangle the JSON braces.
 	hello := `{"t":"hello","v":1,"role":"host","name":"mallorca-host"}`
@@ -178,7 +188,7 @@ Host_Sim :: struct {
 	events: [dynamic]orca.Event,
 	tick:   uint,
 	name:   string, // player's display name, for the host's remote-view label
-	tint:   int,    // stable per-player color/order index (monotonic join order)
+	tint:   int, // stable per-player color/order index (monotonic join order)
 }
 
 // Everything the host needs to run remote players: the connection, its room, a

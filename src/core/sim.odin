@@ -8,9 +8,42 @@ GLYPH_COUNT :: 36
 
 @(rodata)
 GLYPH_TABLE := [GLYPH_COUNT]u8 {
-	'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b',
-	'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
-	'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9',
+	'a',
+	'b',
+	'c',
+	'd',
+	'e',
+	'f',
+	'g',
+	'h',
+	'i',
+	'j',
+	'k',
+	'l',
+	'm',
+	'n',
+	'o',
+	'p',
+	'q',
+	'r',
+	's',
+	't',
+	'u',
+	'v',
+	'w',
+	'x',
+	'y',
+	'z',
 }
 
 glyph_of :: proc(index: uint) -> u8 {
@@ -59,7 +92,7 @@ midi_note_number_of :: proc(g: u8) -> u8 {
 	}
 	// C=0, D=1, ... A and B are equivalent to H and I.
 	deg := int('G' - 'B' + up - 'A') if up <= 'B' else int(up - 'C')
-	return u8(deg/7*12 + int(NOTE_SEMIS[deg%7])) + sharp
+	return u8(deg / 7 * 12 + int(NOTE_SEMIS[deg % 7])) + sharp
 }
 
 //-----------------//
@@ -84,7 +117,7 @@ peek :: proc(s: ^Sim, y, x, dy, dx: int) -> u8 {
 	if y0 < 0 || x0 < 0 || y0 >= s.height || x0 >= s.width {
 		return '.'
 	}
-	return s.cells[y0*s.width + x0]
+	return s.cells[y0 * s.width + x0]
 }
 
 @(private = "file")
@@ -93,7 +126,7 @@ poke :: proc(s: ^Sim, y, x, dy, dx: int, g: u8) {
 	if y0 < 0 || x0 < 0 || y0 >= s.height || x0 >= s.width {
 		return
 	}
-	s.cells[y0*s.width + x0] = g
+	s.cells[y0 * s.width + x0] = g
 }
 
 @(private = "file")
@@ -102,7 +135,7 @@ mark_rel :: proc(s: ^Sim, y, x, dy, dx: int, flags: Mark) {
 	if y0 < 0 || x0 < 0 || y0 >= s.height || x0 >= s.width {
 		return
 	}
-	s.marks[y0*s.width + x0] += flags
+	s.marks[y0 * s.width + x0] += flags
 }
 
 @(private = "file")
@@ -116,8 +149,8 @@ poke_stunned :: proc(s: ^Sim, y, x, dy, dx: int, g: u8) {
 	if y0 < 0 || x0 < 0 || y0 >= s.height || x0 >= s.width {
 		return
 	}
-	s.cells[y0*s.width + x0] = g
-	s.marks[y0*s.width + x0] += {.Sleep}
+	s.cells[y0 * s.width + x0] = g
+	s.marks[y0 * s.width + x0] += {.Sleep}
 }
 
 @(private = "file")
@@ -177,16 +210,16 @@ op_movement :: proc(s: ^Sim, y, x: int, ch: u8) {
 	}
 	y0, x0 := y + dy, x + dx
 	if y0 < 0 || x0 < 0 || y0 >= s.height || x0 >= s.width {
-		s.cells[y*s.width + x] = '*'
+		s.cells[y * s.width + x] = '*'
 		return
 	}
-	dest := y0*s.width + x0
+	dest := y0 * s.width + x0
 	if s.cells[dest] == '.' {
 		s.cells[dest] = ch
-		s.cells[y*s.width + x] = '.'
+		s.cells[y * s.width + x] = '.'
 		s.marks[dest] += {.Sleep}
 	} else {
-		s.cells[y*s.width + x] = '*'
+		s.cells[y * s.width + x] = '*'
 	}
 }
 
@@ -209,19 +242,22 @@ op_midicc :: proc(s: ^Sim, y, x: int, ch: u8) {
 		return
 	}
 	port(s, y, x, 0, 0, OUT)
-	append(s.events, Midi_CC_Event{
-		channel = u8(channel),
-		control = u8(index_of(control_g)),
-		value   = u8(index_of(value_g) * 127 / 35), // 0~35 -> 0~127
-	})
+	append(
+		s.events,
+		Midi_CC_Event {
+			channel = u8(channel),
+			control = u8(index_of(control_g)),
+			value   = u8(index_of(value_g) * 127 / 35), // 0~35 -> 0~127
+		},
+	)
 }
 
 @(private = "file")
 op_comment :: proc(s: ^Sim, y, x: int, ch: u8) {
 	max_x := min(x + 255, s.width)
 	for x0 in x + 1 ..< max_x {
-		g := s.cells[y*s.width + x0]
-		s.marks[y*s.width + x0] += {.Lock}
+		g := s.cells[y * s.width + x0]
+		s.marks[y * s.width + x0] += {.Lock}
 		if g == '#' {
 			break
 		}
@@ -230,7 +266,7 @@ op_comment :: proc(s: ^Sim, y, x: int, ch: u8) {
 
 @(private = "file")
 op_bang :: proc(s: ^Sim, y, x: int, ch: u8) {
-	s.cells[y*s.width + x] = '.'
+	s.cells[y * s.width + x] = '.'
 }
 
 // ':' (poly) and '%' (mono).
@@ -264,17 +300,20 @@ op_midi :: proc(s: ^Sim, y, x: int, ch: u8) {
 		if velocity == 0 {
 			return // zero-velocity note is a note-off; do nothing
 		}
-		velocity = min(velocity*8 - 1, 127) // 1~16 -> 7~127
+		velocity = min(velocity * 8 - 1, 127) // 1~16 -> 7~127
 	}
 	port(s, y, x, 0, 0, OUT)
-	append(s.events, Midi_Note_Event{
-		channel  = u8(channel),
-		octave   = octave,
-		note     = note,
-		velocity = u8(velocity),
-		duration = u8(index_of(length_g) & 0x7f),
-		mono     = ch == '%',
-	})
+	append(
+		s.events,
+		Midi_Note_Event {
+			channel = u8(channel),
+			octave = octave,
+			note = note,
+			velocity = u8(velocity),
+			duration = u8(index_of(length_g) & 0x7f),
+			mono = ch == '%',
+		},
+	)
 }
 
 @(private = "file")
@@ -283,12 +322,12 @@ op_udp :: proc(s: ^Sim, y, x: int, ch: u8) {
 	cpy: [UDP_STRING_COUNT]u8
 	count := 0
 	for i in 0 ..< n {
-		g := s.cells[y*s.width + x + 1 + i]
+		g := s.cells[y * s.width + x + 1 + i]
 		if g == '.' {
 			break
 		}
 		cpy[i] = g
-		s.marks[y*s.width + x + 1 + i] += {.Lock}
+		s.marks[y * s.width + x + 1 + i] += {.Lock}
 		count += 1
 	}
 	if !has_neighboring_bang(s, y, x) {
@@ -314,7 +353,10 @@ op_osc :: proc(s: ^Sim, y, x: int, ch: u8) {
 		return
 	}
 	port(s, y, x, 0, 0, OUT)
-	ev := Osc_Ints_Event{glyph = g, count = u8(length)}
+	ev := Osc_Ints_Event {
+		glyph = g,
+		count = u8(length),
+	}
 	for i in 0 ..< length {
 		ev.numbers[i] = u8(index_of(peek(s, y, x, 0, i + 3)))
 	}
@@ -340,11 +382,14 @@ op_midipb :: proc(s: ^Sim, y, x: int, ch: u8) {
 		return
 	}
 	port(s, y, x, 0, 0, OUT)
-	append(s.events, Midi_PB_Event{
-		channel = u8(channel),
-		msb     = u8(index_of(msb_g) * 127 / 35), // 0~35 -> 0~127
-		lsb     = u8(index_of(lsb_g) * 127 / 35),
-	})
+	append(
+		s.events,
+		Midi_PB_Event {
+			channel = u8(channel),
+			msb     = u8(index_of(msb_g) * 127 / 35), // 0~35 -> 0~127
+			lsb     = u8(index_of(lsb_g) * 127 / 35),
+		},
+	)
 }
 
 @(private = "file")
@@ -620,7 +665,7 @@ op_random :: proc(s: ^Sim, y, x: int, ch: u8) {
 		lo, hi = b, a
 	}
 	// 32-bit shift_mult hash in size_t arithmetic, verbatim from sim.c.
-	key := (s.seed + uint(y*s.width + x)) ~ (s.tick << 16)
+	key := (s.seed + uint(y * s.width + x)) ~ (s.tick << 16)
 	key = (key ~ 61) ~ (key >> 16)
 	key = key + (key << 3)
 	key = key ~ (key >> 4)
@@ -642,7 +687,7 @@ op_track :: proc(s: ^Sim, y, x: int, ch: u8) {
 	if length == 0 {
 		return
 	}
-	read_val_x := int(key%length) + 1
+	read_val_x := int(key % length) + 1
 	for i in 0 ..< int(length) {
 		lock_rel(s, y, x, 0, i + 1)
 	}
@@ -777,11 +822,11 @@ run_tick :: proc(grid: Grid, marks: []Mark, tick, seed: uint, events: ^[dynamic]
 
 	for y in 0 ..< s.height {
 		for x in 0 ..< s.width {
-			g := s.cells[y*s.width + x]
+			g := s.cells[y * s.width + x]
 			if g == '.' {
 				continue
 			}
-			if s.marks[y*s.width + x] & {.Lock, .Sleep} != {} {
+			if s.marks[y * s.width + x] & {.Lock, .Sleep} != {} {
 				continue
 			}
 			switch g {
@@ -855,7 +900,12 @@ run_tick :: proc(grid: Grid, marks: []Mark, tick, seed: uint, events: ^[dynamic]
 // events — same trick as orca-c's tui. Scratch storage comes from
 // `allocator`; with the default temp allocator the caller must free it
 // (e.g. per-frame free_all) after use.
-preview_marks :: proc(grid: Grid, marks: []Mark, tick, seed: uint, allocator := context.temp_allocator) {
+preview_marks :: proc(
+	grid: Grid,
+	marks: []Mark,
+	tick, seed: uint,
+	allocator := context.temp_allocator,
+) {
 	scratch := Grid {
 		cells  = make([]u8, len(grid.cells), allocator),
 		width  = grid.width,
