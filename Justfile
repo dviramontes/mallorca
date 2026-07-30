@@ -73,9 +73,10 @@ bundle:
     plutil -lint bin/Mallorca.app/Contents/Info.plist
     @echo "built bin/Mallorca.app"
 
-# run core simulation tests
+# run core simulation tests and host integration tests
 test:
     odin test src/core
+    odin test src {{defines}}
 
 # fetch server deps and create the SQLite dev database (run once after setup)
 server-setup:
