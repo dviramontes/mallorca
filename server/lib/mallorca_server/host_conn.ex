@@ -79,7 +79,9 @@ defmodule MallorcaServer.HostConn do
   end
 
   defp on_hello(state, msg) do
-    room = Map.get(msg, "room") || Rooms.gen_code()
+    # A host may still request a specific room (tests do), but the native client
+    # sends no room — it lands in the single fixed demo room.
+    room = Map.get(msg, "room") || Rooms.demo_code()
     %{players: players, bpm: bpm, playing: playing} = Rooms.attach_host(room, self())
 
     send_line(state.socket, %{

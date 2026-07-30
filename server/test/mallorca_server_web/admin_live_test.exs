@@ -16,7 +16,7 @@ defmodule MallorcaServerWeb.AdminLiveTest do
   test "shows a room, its players, and each player's latest grid", %{conn: conn} do
     code = Rooms.gen_code()
     player = spawn(fn -> Process.sleep(:infinity) end)
-    %{pid: id} = Rooms.join(code, "alice", player)
+    %{pid: id, name: name} = Rooms.join(code, player)
 
     RoomServer.route_snapshot(code, %{
       "pid" => id,
@@ -31,7 +31,7 @@ defmodule MallorcaServerWeb.AdminLiveTest do
 
     {:ok, lv, html} = live(admin_conn(conn), ~p"/admin")
     assert html =~ code
-    assert render(lv) =~ "alice"
+    assert render(lv) =~ name
     assert render(lv) =~ "D.."
 
     Process.exit(player, :kill)
