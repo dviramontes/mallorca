@@ -23,6 +23,10 @@ check:
     odin check src {{defines}}
     odin check src/core -no-entry-point
 
+# format application and core Odin sources
+fmt:
+    for f in src/*.odin src/core/*.odin; do [ -f "$f" ] && odinfmt -w "$f"; done
+
 # debug build & run; pass an .orca file to load, and extra flags like --debug
 run file="" *flags="":
     mkdir -p bin

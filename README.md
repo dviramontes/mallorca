@@ -166,6 +166,7 @@ message to stderr.
 The `Justfile` contains the common project commands:
 
 ```sh
+just fmt         # format application and core Odin sources
 just check       # type-check the application and core packages
 just test        # run core and host-package tests
 just build       # create a debug binary at bin/mallorca

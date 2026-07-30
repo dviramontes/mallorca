@@ -44,6 +44,7 @@ just setup
 Then type-check and test the project:
 
 ```sh
+just fmt
 just check
 just test
 ```
@@ -60,6 +61,7 @@ notable user-facing changes to the changelog.
 Before submitting:
 
 ```sh
+just fmt
 just check
 just test
 ```
