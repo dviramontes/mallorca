@@ -51,8 +51,8 @@ jobs:
       - name: Set up Erlang and Elixir
         uses: erlef/setup-beam@v1
         with:
-          otp-version: "27.3.3"
-          elixir-version: "1.17.3"
+          otp-version: "27.3.4.14"
+          elixir-version: "1.18.4"
 
       - name: Cache Mix dependencies
         uses: actions/cache@v6
@@ -60,7 +60,7 @@ jobs:
           path: |
             server/deps
             server/_build
-          key: mix-${{ runner.os }}-otp-27-elixir-1.17-${{ hashFiles('server/mix.lock') }}
+          key: mix-${{ runner.os }}-otp-27-elixir-1.18-${{ hashFiles('server/mix.lock') }}
 
       - name: Install dependencies
         run: mix deps.get
