@@ -4,27 +4,25 @@ defmodule MallorcaServerWeb.EditorLoopTest do
 
   import Phoenix.LiveViewTest
 
-  alias MallorcaServer.Rooms
-
   @port Application.compile_env(:mallorca_server, :host_port, 4001)
 
   test "an edit reaches the host and its snapshot renders back", %{conn: conn} do
-    code = Rooms.gen_code()
-
     # A fake host attaches to the room first.
     {:ok, host} =
       :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: :line, active: false], 1000)
 
-    send_line(host, %{t: "hello", room: code})
+    send_line(host, %{t: "hello"})
     assert %{"t" => "welcome"} = recv_msg(host)
 
     # A browser joins and opens the editor; the host is told about the player.
-    {:ok, lv, _html} = live(conn, ~p"/room/#{code}?name=alice")
+    {:ok, lv, _html} = live(conn, ~p"/")
     assert %{"t" => "player_join", "pid" => pid} = recv_msg(host)
 
     # Host streams an initial (blank) grid; the LiveView renders it.
     send_line(host, %{t: "snapshot", pid: pid, w: 3, h: 1, grid: "...", tick: 0})
-    assert eventually(fn -> not (render(lv) =~ "waiting for host") end)
+    assert eventually(fn -> has_element?(lv, "#session-#{pid}") end)
+    lv |> element("#session-#{pid}") |> render_click()
+    assert eventually(fn -> has_element?(lv, "#grid") end)
 
     # Typing a glyph sends an edit at the cursor (0,0) to the host...
     render_hook(lv, "key", %{"key" => "D"})
@@ -38,15 +36,13 @@ defmodule MallorcaServerWeb.EditorLoopTest do
   end
 
   test "a multi-line paste is forwarded to the host as one paste message", %{conn: conn} do
-    code = Rooms.gen_code()
-
     {:ok, host} =
       :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: :line, active: false], 1000)
 
-    send_line(host, %{t: "hello", room: code})
+    send_line(host, %{t: "hello"})
     assert %{"t" => "welcome"} = recv_msg(host)
 
-    {:ok, lv, _html} = live(conn, ~p"/room/#{code}?name=alice")
+    {:ok, lv, _html} = live(conn, ~p"/")
     assert %{"t" => "player_join", "pid" => pid} = recv_msg(host)
 
     send_line(host, %{
@@ -58,7 +54,9 @@ defmodule MallorcaServerWeb.EditorLoopTest do
       tick: 0
     })
 
-    assert eventually(fn -> not (render(lv) =~ "waiting for host") end)
+    assert eventually(fn -> has_element?(lv, "#session-#{pid}") end)
+    lv |> element("#session-#{pid}") |> render_click()
+    assert eventually(fn -> has_element?(lv, "#grid") end)
 
     render_hook(lv, "paste", %{"text" => "..C\n..7"})
 

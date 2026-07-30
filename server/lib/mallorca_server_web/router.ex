@@ -30,7 +30,9 @@ defmodule MallorcaServerWeb.Router do
   scope "/", MallorcaServerWeb do
     pipe_through :browser
 
-    live "/", HomeLive
+    # Single-room demo: both the landing page and the native client's legacy
+    # room URL open the same fixed room; RoomLive ignores the path code.
+    live "/", RoomLive
     live "/room/:code", RoomLive
   end
 

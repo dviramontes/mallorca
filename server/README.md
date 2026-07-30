@@ -1,18 +1,18 @@
-# MallorcaServer
+# Mallorca server
 
-To start your Phoenix server:
+Phoenix relay and browser client for Mallorca's network demo.
 
-* Run `mix setup` to install and setup dependencies
-* Start Phoenix endpoint with `mix phx.server` or inside IEx with `iex -S mix phx.server`
+The demo uses one fixed room, `MYROOM`. Start the server, then open
+[`localhost:4000`](http://localhost:4000). Browsers join automatically with a
+server-assigned Orca operator name; there is no room-code or display-name form.
+The active-session list lets each browser watch the native grid or another
+browser's grid. Only a browser's own session is editable.
 
-Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
+```sh
+mix setup
+mix phx.server
+```
 
-Ready to run in production? Please [check our deployment guides](https://phoenix.hexdocs.pm/deployment.html).
-
-## Learn more
-
-* Official website: https://www.phoenixframework.org/
-* Guides: https://phoenix.hexdocs.pm/overview.html
-* Docs: https://phoenix.hexdocs.pm
-* Forum: https://elixirforum.com/c/phoenix-forum
-* Source: https://github.com/phoenixframework/phoenix
+The native client can connect without requesting a room and will be attached to
+`MYROOM`. Its legacy `/room/:code` browser URL remains accepted, but every such
+URL opens the fixed demo room.

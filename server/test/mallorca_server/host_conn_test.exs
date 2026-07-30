@@ -17,8 +17,8 @@ defmodule MallorcaServer.HostConnTest do
 
     # a browser player joins -> host should receive player_join
     player = spawn(fn -> Process.sleep(:infinity) end)
-    %{pid: id} = Rooms.join(code, "alice", player)
-    assert %{"t" => "player_join", "pid" => ^id, "name" => "alice"} = recv_msg(sock)
+    %{pid: id, name: name} = Rooms.join(code, player)
+    assert %{"t" => "player_join", "pid" => ^id, "name" => ^name} = recv_msg(sock)
 
     # player leaves -> host should receive player_leave
     Process.exit(player, :kill)
@@ -45,7 +45,7 @@ defmodule MallorcaServer.HostConnTest do
 
     # a player joins before any host attaches
     player = spawn(fn -> Process.sleep(:infinity) end)
-    %{pid: id} = Rooms.join(code, "dasd", player)
+    %{pid: id, name: name} = Rooms.join(code, player)
 
     # the host connects to that specific room
     {:ok, sock} =
@@ -54,10 +54,22 @@ defmodule MallorcaServer.HostConnTest do
     send_line(sock, %{t: "hello", room: code})
     welcome = recv_msg(sock)
     assert %{"t" => "welcome", "room" => ^code} = welcome
-    assert [%{"pid" => ^id, "name" => "dasd"}] = welcome["players"]
+    assert [%{"pid" => ^id, "name" => ^name}] = welcome["players"]
 
     :gen_tcp.close(sock)
     Process.exit(player, :kill)
+  end
+
+  test "a host without a room joins the fixed demo room" do
+    {:ok, sock} =
+      :gen_tcp.connect(~c"127.0.0.1", @port, [:binary, packet: :line, active: false], 1000)
+
+    send_line(sock, %{t: "hello", v: 1, role: "host"})
+
+    assert %{"t" => "welcome", "room" => room} = recv_msg(sock)
+    assert room == Rooms.demo_code()
+
+    :gen_tcp.close(sock)
   end
 
   defp send_line(sock, map), do: :ok = :gen_tcp.send(sock, [Jason.encode!(map), ?\n])

@@ -39,7 +39,6 @@ the project roadmap.
 - macOS
 - A recent [Odin compiler](https://odin-lang.org/docs/install/)
 - [just](https://github.com/casey/just)
-- Git
 - [Elixir](https://elixir-lang.org/install.html) — only for network mode (the `server/` Phoenix app)
 
 Make sure `odin` and `just` are available on your `PATH`.

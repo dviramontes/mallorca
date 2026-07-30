@@ -13,6 +13,14 @@ defmodule MallorcaServer.RoomServer do
 
   alias MallorcaServer.{Rooms, HostConn}
 
+  # Player names are assigned from the Orca operator vocabulary (the A–Z ops,
+  # same names the native app shows on hover) instead of being user-chosen.
+  # Scanned in order, first unused wins, so a fresh room hands out add, subtract,
+  # clock, … deterministically.
+  @operator_names ~w(add subtract clock delay east if generator halt increment
+                     jump konkat lesser multiply north read push query random
+                     south track euclid variable west teleport yump lerp)
+
   def start_link(code) do
     GenServer.start_link(__MODULE__, code, name: Rooms.via(code))
   end
@@ -21,8 +29,15 @@ defmodule MallorcaServer.RoomServer do
     GenServer.call(Rooms.via(code), {:attach_host, host_pid})
   end
 
-  def join(code, name, subscriber_pid) do
-    GenServer.call(Rooms.via(code), {:join, name, subscriber_pid})
+  def join(code, subscriber_pid) do
+    GenServer.call(Rooms.via(code), {:join, subscriber_pid})
+  end
+
+  @doc "The room's cached latest snapshots, keyed by player pid (and \"host\")."
+  def snapshots(code) do
+    GenServer.call(Rooms.via(code), :snapshots)
+  catch
+    :exit, _ -> %{}
   end
 
   @doc "Forward a player's edit to the host (fire-and-forget)."
@@ -57,14 +72,15 @@ defmodule MallorcaServer.RoomServer do
   end
 
   @impl true
-  def handle_call({:join, name, sub}, _from, state) do
+  def handle_call({:join, sub}, _from, state) do
     ref = Process.monitor(sub)
     id = gen_player_id()
+    name = assign_operator_name(state)
     state = put_in(state.players[sub], %{id: id, name: name, ref: ref})
     Logger.info("room #{state.code}: + #{name} (#{id})")
     notify_host(state, %{t: "player_join", pid: id, name: name})
     broadcast_roster(state)
-    {:reply, %{pid: id}, state}
+    {:reply, %{pid: id, name: name}, state}
   end
 
   def handle_call(:info, _from, state) do
@@ -86,6 +102,10 @@ defmodule MallorcaServer.RoomServer do
     {:reply, info, state}
   end
 
+  def handle_call(:snapshots, _from, state) do
+    {:reply, state.snapshots, state}
+  end
+
   @impl true
   def handle_cast({:edit, edit}, state) do
     notify_host(state, edit)
@@ -95,9 +115,14 @@ defmodule MallorcaServer.RoomServer do
   def handle_cast({:snapshot, snapshot}, state) do
     pid = Map.get(snapshot, "pid")
 
-    case lv_for(state, pid) do
-      nil -> :ok
-      lv -> send(lv, {:snapshot, snapshot})
+    # Fan every snapshot (players *and* the native "host" grid) out to all
+    # LiveViews in the room, so any viewer can watch any session's live grid.
+    if pid do
+      Phoenix.PubSub.broadcast(
+        MallorcaServer.PubSub,
+        "room:#{state.code}",
+        {:snapshot, snapshot}
+      )
     end
 
     snapshots = if pid, do: Map.put(state.snapshots, pid, snapshot), else: state.snapshots
@@ -130,8 +155,22 @@ defmodule MallorcaServer.RoomServer do
     state.players |> Map.values() |> Enum.map(&%{id: &1.id, name: &1.name})
   end
 
-  defp lv_for(state, id) do
-    Enum.find_value(state.players, fn {lv, p} -> if p.id == id, do: lv end)
+  # Pick the first operator name not already taken in this room; if the whole
+  # A–Z vocabulary is in use, fall back to the first free numbered operator.
+  defp assign_operator_name(state) do
+    used = for {_sub, p} <- state.players, do: p.name
+
+    case Enum.reject(@operator_names, &(&1 in used)) do
+      [name | _] ->
+        name
+
+      [] ->
+        number =
+          Stream.iterate(27, &(&1 + 1))
+          |> Enum.find(&("operator-#{&1}" not in used))
+
+        "operator-#{number}"
+    end
   end
 
   defp notify_host(%{host: nil}, _msg), do: :ok

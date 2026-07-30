@@ -11,15 +11,16 @@ defmodule MallorcaServer.RoomServerTest do
 
   test "join adds a player and broadcasts the roster", %{code: code} do
     player = spawn_player()
-    %{pid: id} = Rooms.join(code, "alice", player)
+    %{pid: id, name: name} = Rooms.join(code, player)
 
     assert_receive {:roster, roster, _host_online}
-    assert Enum.any?(roster, &(&1.name == "alice" and &1.id == id))
+    assert name == "add"
+    assert Enum.any?(roster, &(&1.name == name and &1.id == id))
   end
 
   test "a player's process dying removes it from the roster", %{code: code} do
     player = spawn_player()
-    Rooms.join(code, "bob", player)
+    Rooms.join(code, player)
     assert_receive {:roster, [_one], _}
 
     Process.exit(player, :kill)
@@ -28,7 +29,7 @@ defmodule MallorcaServer.RoomServerTest do
 
   test "roster reports host presence", %{code: code} do
     # no host yet
-    Rooms.join(code, "carol", spawn_player())
+    Rooms.join(code, spawn_player())
     assert_receive {:roster, _roster, false}
 
     # attach a fake host process
@@ -39,6 +40,17 @@ defmodule MallorcaServer.RoomServerTest do
     # host dies -> back to offline
     Process.exit(host, :kill)
     assert_receive {:roster, _roster, false}
+  end
+
+  test "connected players receive distinct operator names", %{code: code} do
+    first = Rooms.join(code, spawn_player())
+    assert_receive {:roster, [_first], false}
+
+    second = Rooms.join(code, spawn_player())
+    assert_receive {:roster, _players, false}
+
+    assert first.name == "add"
+    assert second.name == "subtract"
   end
 
   defp spawn_player, do: spawn(fn -> Process.sleep(:infinity) end)

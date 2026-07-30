@@ -9,6 +9,13 @@ defmodule MallorcaServer.Rooms do
   @registry MallorcaServer.RoomRegistry
   @supervisor MallorcaServer.RoomSupervisor
 
+  # The single, fixed demo room. Network mode is a one-room show: the native
+  # host attaches here (no code negotiation) and every browser lands here.
+  @demo_code "MYROOM"
+
+  @doc "The fixed demo room code every host and browser shares."
+  def demo_code, do: @demo_code
+
   @doc "Registry `:via` tuple for a room's GenServer."
   def via(code), do: {:via, Registry, {@registry, code}}
 
@@ -26,10 +33,13 @@ defmodule MallorcaServer.Rooms do
     end
   end
 
-  @doc "Join `subscriber_pid` (a LiveView) to the room as `name`. Returns %{pid: id}."
-  def join(code, name, subscriber_pid) do
+  @doc """
+  Join `subscriber_pid` (a LiveView) to the room. The server assigns the player
+  an Orca-operator name (no user-chosen names). Returns %{pid: id, name: name}.
+  """
+  def join(code, subscriber_pid) do
     ensure(code)
-    RoomServer.join(code, name, subscriber_pid)
+    RoomServer.join(code, subscriber_pid)
   end
 
   @doc "Attach the host connection to the room. Returns %{players, bpm, playing}."
