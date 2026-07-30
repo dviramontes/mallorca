@@ -11,10 +11,14 @@ live-code together. See
 [Quickstart: hosting and joining a room](#quickstart-hosting-and-joining-a-room).
 
 > [!NOTE]
-> Mallorca is a work in progress and currently runs on macOS. The simulation
-> sends its MIDI events out over CoreMIDI (note, control change, and pitch
-> bend); OSC and UDP events are still produced but not yet delivered. Network
-> mode assumes a LAN or trusted network, and only the host machine emits MIDI.
+> Mallorca is a work in progress and currently runs on macOS because that is
+> the platform being used to develop it. macOS is not intended to be a permanent
+> limitation: support for other desktop platforms is planned, and a future
+> WebAssembly build that runs in the browser may also be explored. The
+> simulation sends its MIDI events out over CoreMIDI (note, control change, and
+> pitch bend); OSC and UDP events are still produced but not yet delivered.
+> Network mode assumes a LAN or trusted network, and only the host machine emits
+> MIDI.
 
 > [!WARNING]
 > Mallorca is pre-release software. Bugs and incomplete behavior are expected,
@@ -43,7 +47,7 @@ the project roadmap.
 
 ## Requirements
 
-- macOS
+- macOS for the current implementation
 - A recent [Odin compiler](https://odin-lang.org/docs/install/)
 - [just](https://github.com/casey/just)
 - [Elixir](https://elixir-lang.org/install.html) — only for network mode (the `server/` Phoenix app)
