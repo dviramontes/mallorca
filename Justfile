@@ -23,6 +23,10 @@ check:
     odin check src {{defines}}
     odin check src/core -no-entry-point
 
+# format application and core Odin sources
+fmt:
+    for f in src/*.odin src/core/*.odin; do [ -f "$f" ] && odinfmt -w "$f"; done
+
 # debug build & run; pass an .orca file to load, and extra flags like --debug
 run file="" *flags="":
     mkdir -p bin
@@ -73,9 +77,10 @@ bundle:
     plutil -lint bin/Mallorca.app/Contents/Info.plist
     @echo "built bin/Mallorca.app"
 
-# run core simulation tests
+# run core simulation tests and host integration tests
 test:
     odin test src/core
+    odin test src {{defines}}
 
 # fetch server deps and create the SQLite dev database (run once after setup)
 server-setup:

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  odin:
+    name: Odin
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Odin
+        uses: laytan/setup-odin@v2
+        with:
+          token: ${{ github.token }}
+          release: latest
+
+      - name: Install just
+        run: brew install just
+
+      - name: Set up karl2d
+        run: just setup
+
+      - name: Check Odin packages
+        run: just check
+
+      - name: Test Odin packages
+        run: just test
+
+  elixir:
+    name: Elixir
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Erlang and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.14"
+          elixir-version: "1.18.4"
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            server/deps
+            server/_build
+          key: mix-${{ runner.os }}-otp-27-elixir-1.18-${{ hashFiles('server/mix.lock') }}
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Test Elixir server
+        run: mix test

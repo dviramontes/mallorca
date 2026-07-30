@@ -74,12 +74,12 @@ foreign system_lib {
 Midi :: struct {
 	client:   MIDIClientRef,
 	source:   MIDIEndpointRef, // virtual source, always created
-	port:     MIDIPortRef,     // output port for the hardware destination
+	port:     MIDIPortRef, // output port for the hardware destination
 	dest:     MIDIEndpointRef, // first hardware destination, if any
 	has_dest: bool,
 	ok:       bool,
 	debug:    bool, // --debug: log every MIDI message to stderr
-	sent:     int,  // running count of messages emitted (for --debug output)
+	sent:     int, // running count of messages emitted (for --debug output)
 }
 
 @(private = "file")
@@ -126,44 +126,61 @@ midi_shutdown :: proc(m: ^Midi) {
 	m^ = {}
 }
 
-// Send one short (status + two data bytes) MIDI message to the virtual
-// source and, if present, the hardware destination.
+// Translate Mallorca's channel selector to CoreMIDI's zero-based channel.
+// Selector 0 is omni; selectors 1-15 use matching user-facing MIDI channels.
+midi_channel_targets :: proc(selector: u8) -> (targets: [16]u8, count: int) {
+	if selector == 0 {
+		for channel in u8(0) ..< 16 {
+			targets[channel] = channel
+		}
+		return targets, len(targets)
+	}
+	targets[0] = (selector - 1) & 0x0f
+	return targets, 1
+}
+
+// Send one short (status + two data bytes) MIDI message to the virtual source
+// and, if present, the hardware destination. `status` contains no channel.
 @(private = "file")
-send3 :: proc(m: ^Midi, b0, b1, b2: u8) {
+send_channel3 :: proc(m: ^Midi, status, selector, b1, b2: u8) {
 	if !m.ok {
 		return
 	}
-	pkts: MIDIPacketList
-	pkts.numPackets = 1
-	pkts.packet.timeStamp = mach_absolute_time() // "now" in host ticks
-	pkts.packet.length = 3
-	pkts.packet.data[0] = b0
-	pkts.packet.data[1] = b1
-	pkts.packet.data[2] = b2
-	if m.source != 0 {
-		MIDIReceived(m.source, &pkts)
-	}
-	if m.has_dest {
-		MIDISend(m.port, m.dest, &pkts)
-	}
-	m.sent += 1
-	if m.debug {
-		fmt.eprintfln("midi tx #%d: %02x %02x %02x", m.sent, b0, b1, b2)
+	targets, count := midi_channel_targets(selector)
+	for channel in targets[:count] {
+		b0 := (status & 0xf0) | channel
+		pkts: MIDIPacketList
+		pkts.numPackets = 1
+		pkts.packet.timeStamp = mach_absolute_time() // "now" in host ticks
+		pkts.packet.length = 3
+		pkts.packet.data[0] = b0
+		pkts.packet.data[1] = b1
+		pkts.packet.data[2] = b2
+		if m.source != 0 {
+			MIDIReceived(m.source, &pkts)
+		}
+		if m.has_dest {
+			MIDISend(m.port, m.dest, &pkts)
+		}
+		m.sent += 1
+		if m.debug {
+			fmt.eprintfln("midi tx #%d: %02x %02x %02x", m.sent, b0, b1, b2)
+		}
 	}
 }
 
 midi_note_on :: proc(m: ^Midi, channel, note, velocity: u8) {
-	send3(m, 0x90 | (channel & 0x0f), note & 0x7f, velocity & 0x7f)
+	send_channel3(m, 0x90, channel, note & 0x7f, velocity & 0x7f)
 }
 
 midi_note_off :: proc(m: ^Midi, channel, note: u8) {
-	send3(m, 0x80 | (channel & 0x0f), note & 0x7f, 0)
+	send_channel3(m, 0x80, channel, note & 0x7f, 0)
 }
 
 midi_cc :: proc(m: ^Midi, channel, control, value: u8) {
-	send3(m, 0xb0 | (channel & 0x0f), control & 0x7f, value & 0x7f)
+	send_channel3(m, 0xb0, channel, control & 0x7f, value & 0x7f)
 }
 
 midi_pitch_bend :: proc(m: ^Midi, channel, lsb, msb: u8) {
-	send3(m, 0xe0 | (channel & 0x0f), lsb & 0x7f, msb & 0x7f)
+	send_channel3(m, 0xe0, channel, lsb & 0x7f, msb & 0x7f)
 }
