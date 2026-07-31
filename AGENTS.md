@@ -21,15 +21,30 @@ just setup   # clones karl2d, checks out the pinned commit, applies patches/
 applies `patches/karl2d-mac-modifier-keys.patch` on top. Update the pin
 deliberately; re-running `setup` re-checks-out and re-applies the patch.
 
+`agent-habilis-mesh/` is a vendored Rust cargo workspace (the p2p mesh FFI —
+see [docs/p2p-protocol.md](docs/p2p-protocol.md)), committed to the repo. Its
+`rust-toolchain.toml` pins the toolchain (rustup installs it automatically on
+first `cargo` invocation inside that directory); building it requires rustup
+and network access to fetch its patched `iroh`/`iroh-gossip` git dependencies
+on a cold machine. `just mesh` builds it and copies the staticlib to
+`agent-habilis-mesh/lib/`; every `check`/`run`/`build`/`release`/`bundle`/`test`
+recipe depends on `mesh`, so this is normally automatic (a no-op ~0.2s once
+built).
+
+Mallorca's networking used to go through a Phoenix relay server
+(`server/`, Elixir); that's gone. Rooms are now serverless — see below.
+
 ## Commands
 
 ```sh
-just check       # odin check both packages (src and src/core) independently
-just test        # run core package tests (odin test src/core)
-just run [file]  # debug build & run, optionally loading an .orca file
-just build       # debug binary -> bin/mallorca
-just release     # optimized binary (-o:speed) -> bin/mallorca
-just clean       # remove bin/
+just check              # odin check both packages (src and src/core) independently
+just test               # run core package tests (odin test src/core)
+just run [file]         # debug build & run, optionally loading an .orca file
+just create-room [file] # run and open a new p2p room
+just join-room <hash> [file]  # run and join an existing p2p room
+just build              # debug binary -> bin/mallorca
+just release            # optimized binary (-o:speed) -> bin/mallorca
+just clean               # remove bin/
 ```
 
 Run a single core test by name:

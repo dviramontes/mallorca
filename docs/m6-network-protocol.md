@@ -1,5 +1,14 @@
 # M6 network protocol
 
+**Superseded.** Replaced by the serverless p2p mesh — see
+[p2p-protocol.md](p2p-protocol.md). The Phoenix server (`server/`), the
+host↔server TCP link, and every message type below except `snapshot` are
+retired; the `snapshot` grid encoding in §2 (row-major string, `.` empty, no
+separators) is reused verbatim by the p2p protocol. Kept for historical
+context only — do not implement against this document.
+
+---
+
 Wire protocol for mallorca's network mode (PLAN.md → M6). This is the contract
 both sides implement; write it before coding either.
 
