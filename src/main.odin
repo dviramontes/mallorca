@@ -1694,15 +1694,14 @@ draw_room_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	k2.draw_text("^R copy id", {x, y}, size, STATUS, font)
 }
 
-// Truncate the room hash for HUD display: strip the leading 💬 (the bundled
-// font has no glyph for it) and shorten to first10…last6.
+// Truncate the bare room hash for HUD display (first10…last6). `app.p2p.hash`
+// is already glyph-free; this only shortens.
 @(private = "file")
 p2p_hash_display :: proc(hash: string) -> string {
-	trimmed := strings.trim_prefix(hash, "💬")
-	if len(trimmed) <= 16 {
-		return trimmed
+	if len(hash) <= 16 {
+		return hash
 	}
-	return fmt.tprintf("%s…%s", trimmed[:10], trimmed[len(trimmed) - 6:])
+	return fmt.tprintf("%s…%s", hash[:10], hash[len(hash) - 6:])
 }
 
 // Legend (M8): a compact row of colored name chips just above the status line,

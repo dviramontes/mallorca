@@ -77,7 +77,7 @@ Snapshot_Msg :: struct {
 }
 
 // Build Mesh_Opts from cli, open the pipe (create when join_hash == ""), and
-// on success print the room line + full hash + join hint to stdout (per the
+// on success print the room line + bare hash + join hint to stdout (per the
 // plan's Phase 4 p2p_open bullet). All mesh calls are main-thread / timeout=0.
 p2p_open :: proc(cli: P2p_Cli_Opts) -> (st: P2p_State, ok: bool) {
 	st.sims = make(map[string]^Peer_Sim)
@@ -120,7 +120,7 @@ p2p_open :: proc(cli: P2p_Cli_Opts) -> (st: P2p_State, ok: bool) {
 
 	fmt.printfln("mallorca: room %q open  (%s)", st.room_name, st.nick)
 	fmt.println(st.hash)
-	fmt.printfln("mallorca: join with: mallorca --join-room='%s'", st.hash)
+	fmt.printfln("mallorca: join with: mallorca --join-room=%s", st.hash)
 
 	return st, true
 }

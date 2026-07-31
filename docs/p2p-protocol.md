@@ -113,8 +113,9 @@ mallorca [file] [--create-room | --join-room=<HASH>] [--room-name=<NAME>]
 
 - `--create-room` / `--join-room=<HASH>` are mutually exclusive; every other
   room flag requires one of them to be present.
+- The room hash is a bare base58 string (the mesh id itself — no URI wrapping).
 - `mesh_open` (and therefore the room) must succeed **before** the window
-  opens: on success the full room hash prints to stdout (its own line, so it's
+  opens: on success the room hash prints to stdout (its own line, so it's
   easy to copy) along with a ready-to-paste `--join-room=` hint; on failure
   `mallorca` prints `mesh_last_error()` to stderr and exits — no window is ever
   created.

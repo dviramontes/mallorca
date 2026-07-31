@@ -46,7 +46,7 @@ create-room file="" room_name="": mesh
     mkdir -p bin
     odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" --create-room {{ if room_name != "" { "--room-name=" + room_name } else { "" } }}
 
-# join a p2p room by its full 💬 hash (printed by create-room)
+# join a p2p room by its bare base58 hash (printed by create-room)
 join-room hash file="": mesh
     mkdir -p bin
     odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" --join-room={{hash}}
