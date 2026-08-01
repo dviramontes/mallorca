@@ -28,18 +28,21 @@ jobs:
       - name: Install just
         run: brew install just
 
-      - name: Set up karl2d
+      # Clones both pinned dependencies: karl2d and fofoca. Must stay ahead of
+      # the Rust steps below — they read fofoca/rust-toolchain.toml, which does
+      # not exist until this clones it.
+      - name: Set up karl2d and fofoca
         run: just setup
 
-      - name: Set up Rust (agent-habilis-mesh)
+      - name: Set up Rust (fofoca)
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          rust-src-dir: agent-habilis-mesh
+          rust-src-dir: fofoca
 
-      - name: Cache Rust (agent-habilis-mesh)
+      - name: Cache Rust (fofoca)
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: agent-habilis-mesh
+          workspaces: fofoca
 
       - name: Check Odin packages
         run: just check

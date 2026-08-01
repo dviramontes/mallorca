@@ -8,61 +8,79 @@ default:
 # pinned karl2d revision (update deliberately)
 karl2d_rev := "409390f8629132a56446dd744943e4ac2858070e"
 
-# vendored agent-habilis-mesh cargo workspace (p2p rooms, see docs/p2p-protocol.md)
-mesh_manifest := "agent-habilis-mesh/Cargo.toml"
+# the fofoca cargo workspace (p2p rooms, see docs/p2p-protocol.md). Its own repo
+# since the extraction; cloned into fofoca/ by `just setup`, same as karl2d.
+fofoca_repo := "https://github.com/fofoca-network/fofoca"
 
-# clone karl2d into karl2d/ (vendored dependency, pinned + local patches)
+# pinned fofoca revision. Bump this after pushing a change to the fofoca repo —
+# the dev loop is: edit in fofoca/, `just check` here, push there, bump here.
+fofoca_rev := "53df47bf4f4a55ddff476faec7e496339006cfce"
+
+fofoca_manifest := "fofoca/Cargo.toml"
+
+# clone the two vendored dependencies at their pinned revisions
 setup:
     test -d karl2d || git clone {{karl2d_repo}} karl2d
     git -C karl2d checkout --detach {{karl2d_rev}}
-    git -C karl2d apply ../patches/karl2d-mac-modifier-keys.patch
+    # `checkout --detach` keeps local modifications, so the patch survives a
+    # re-run and applying it again fails. If it reverses cleanly it is already
+    # in place — skip. Without this, `setup` is a one-shot recipe.
+    git -C karl2d apply --reverse --check ../patches/karl2d-mac-modifier-keys.patch 2>/dev/null \
+      || git -C karl2d apply ../patches/karl2d-mac-modifier-keys.patch
+    test -d fofoca || git clone {{fofoca_repo}} fofoca
+    git -C fofoca fetch --quiet origin
+    git -C fofoca checkout --detach --quiet {{fofoca_rev}}
 
 # no audio playback needed (MIDI in M5 uses CoreMIDI); the CoreAudio
 # backend also accrues memory in AudioToolbox internals while idle
 defines := "-define:KARL2D_AUDIO_BACKEND=nil"
 
-# build the mesh FFI staticlib and copy it to the path src links against
-mesh:
-    cargo build --release -p agent-habilis-mesh-ffi --manifest-path {{mesh_manifest}}
-    mkdir -p agent-habilis-mesh/lib
-    cp agent-habilis-mesh/target/release/libagent_habilis_mesh_ffi.a agent-habilis-mesh/lib/
+# build the fofoca FFI staticlib and copy it to the path src links against.
+# Every build recipe depends on this one but none depend on `setup`, so clone
+# on demand rather than failing with a bare "no such manifest".
+fofoca:
+    @test -d fofoca || just setup
+    cargo build --release -p fofoca-ffi --manifest-path {{fofoca_manifest}}
+    mkdir -p fofoca/lib
+    cp fofoca/target/release/libfofoca_ffi.a fofoca/lib/
 
 # type-check all packages without building
-check: mesh
+check: fofoca
     odin check src {{defines}}
     odin check src/core -no-entry-point
+    odin check src/p2p -no-entry-point
 
 # format application and core Odin sources
 fmt:
-    for f in src/*.odin src/core/*.odin; do [ -f "$f" ] && odinfmt -w "$f"; done
+    for f in src/*.odin src/core/*.odin src/p2p/*.odin; do [ -f "$f" ] && odinfmt -w "$f"; done
 
 # debug build & run; pass an .orca file to load, and extra flags (see docs/p2p-protocol.md)
-run file="" *flags="": mesh
+run file="" *flags="": fofoca
     mkdir -p bin
     odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" {{flags}}
 
 # create a p2p room and open `file` (optional), optionally naming the room
-create-room file="" room_name="": mesh
+create-room file="" room_name="": fofoca
     mkdir -p bin
     odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" --create-room {{ if room_name != "" { "--room-name=" + room_name } else { "" } }}
 
 # join a p2p room by its bare base58 hash (printed by create-room)
-join-room hash file="": mesh
+join-room hash file="": fofoca
     mkdir -p bin
     odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" --join-room={{hash}}
 
 # debug build
-build: mesh
+build: fofoca
     mkdir -p bin
     odin build src -debug {{defines}} -out:bin/mallorca
 
 # optimized build
-release: mesh
+release: fofoca
     mkdir -p bin
     odin build src -o:speed {{defines}} -out:bin/mallorca
 
 # build an optimized .app bundle with the island icon (macOS Dock/Finder icon)
-bundle: mesh
+bundle: fofoca
     mkdir -p bin
     odin build src -o:speed {{defines}} -out:bin/mallorca
     rm -rf bin/Mallorca.app
@@ -90,15 +108,27 @@ bundle: mesh
     plutil -lint bin/Mallorca.app/Contents/Info.plist
     @echo "built bin/Mallorca.app"
 
+# optimized build with timing instrumentation compiled in (see src/profile.odin);
+# accepts --profile-run=<seconds> and --profile-no-play
+profile: fofoca
+    mkdir -p bin
+    odin build src -o:speed {{defines}} -define:MALLORCA_PROFILE=true -out:bin/mallorca-prof
+
+# measure what the mesh FFI costs: size, CPU, RAM (see docs/ffi-cost.md).
+# `just measure size` skips the runtime matrix, which needs an idle machine.
+measure phase="all": fofoca
+    ./scripts/measure-ffi-cost.sh {{phase}}
+
 # run core simulation tests and app package tests
-test: mesh
+test: fofoca
     odin test src/core
+    odin test src/p2p
     odin test src {{defines}}
 
 # remove build artifacts
 clean:
     rm -rf bin
 
-# remove the vendored mesh workspace's build output (not part of `clean`)
-clean-mesh:
-    cargo clean --manifest-path {{mesh_manifest}}
+# remove the fofoca workspace's build output (not part of `clean`)
+clean-fofoca:
+    cargo clean --manifest-path {{fofoca_manifest}}

@@ -10,26 +10,47 @@ semantic reference for all VM behavior.
 
 ## Setup (required before first build)
 
-karl2d is a vendored dependency, not committed (`karl2d/` is gitignored). You
-**must** run `just setup` before any build/check/run, or imports fail:
+karl2d and fofoca are vendored dependencies, neither committed (`karl2d/` and
+`fofoca/` are both gitignored). You **must** run `just setup` before any
+build/check/run, or imports fail and the staticlib has no manifest to build
+from:
 
 ```sh
-just setup   # clones karl2d, checks out the pinned commit, applies patches/
+just setup   # clones both at their pinned commits, applies patches/ to karl2d
 ```
 
-`setup` pins a specific karl2d revision (see `karl2d_rev` in the `Justfile`) and
-applies `patches/karl2d-mac-modifier-keys.patch` on top. Update the pin
-deliberately; re-running `setup` re-checks-out and re-applies the patch.
+The pins are `karl2d_rev` and `fofoca_rev` in the `Justfile`; karl2d also gets
+`patches/karl2d-mac-modifier-keys.patch` on top. Update either deliberately.
+Re-running `setup` is safe: it re-checks-out both and skips the karl2d patch
+when it is already applied.
 
-`agent-habilis-mesh/` is a vendored Rust cargo workspace (the p2p mesh FFI —
-see [docs/p2p-protocol.md](docs/p2p-protocol.md)), committed to the repo. Its
+Both land on a **detached HEAD**, on purpose. The Justfile claims an exact
+commit for each, and a checkout sitting on a branch could be moved by a stray
+`git pull` while the pin still said otherwise. Detaching makes the pin true.
+Treat `karl2d/` and `fofoca/` as disposable build inputs — `just setup`
+re-derives them at any time — and do not commit in either.
+
+`fofoca/` is a gitignored clone of
+[fofoca-network/fofoca](https://github.com/fofoca-network/fofoca), the Rust
+cargo workspace behind the p2p mesh FFI (see
+[docs/p2p-protocol.md](docs/p2p-protocol.md)). To change the engine, work in
+your own clone of that repo on a branch, push there, then bump `fofoca_rev`
+here and re-run `just setup`. For a quick iteration you can edit `fofoca/`
+in place and run `just check` to rebuild the staticlib and relink Odin against
+it, but nothing there survives the next `setup` unless you have pushed it. Its
 `rust-toolchain.toml` pins the toolchain (rustup installs it automatically on
 first `cargo` invocation inside that directory); building it requires rustup
 and network access to fetch its patched `iroh`/`iroh-gossip` git dependencies
-on a cold machine. `just mesh` builds it and copies the staticlib to
-`agent-habilis-mesh/lib/`; every `check`/`run`/`build`/`release`/`bundle`/`test`
-recipe depends on `mesh`, so this is normally automatic (a no-op ~0.2s once
-built).
+on a cold machine. `just fofoca` builds it and copies the staticlib to
+`fofoca/lib/`; every `check`/`run`/`build`/`release`/`bundle`/`test`
+recipe depends on `fofoca`, so this is normally automatic (a no-op ~0.2s once
+built). It dominates the build: it is 96.7% of the release binary, and it is
+linked whether or not a room is ever opened. `just measure` quantifies that and
+the runtime cost — see [docs/ffi-cost.md](docs/ffi-cost.md), and `just profile`
+for a build with the timing instrumentation compiled in.
+[mesh-slimming.md](https://github.com/fofoca-network/fofoca/blob/main/docs/mesh-slimming.md)
+root-causes those numbers and drove the crate split; it moved to the fofoca
+repo with the engine.
 
 Mallorca's networking used to go through a Phoenix relay server
 (`server/`, Elixir); that's gone. Rooms are now serverless — see below.
@@ -83,6 +104,15 @@ I/O. This separation is the backbone of the project — preserve it.
     uppercase operators run every frame, lowercase only on a neighboring `*`
     bang. One big `switch` in `run_tick` dispatches each glyph to its `op_*`
     proc.
+
+- **`src/p2p/` (package `p2p`)** — serverless rooms: the room state machine,
+  the mesh worker thread that owns every FFI call, and jam compose. Knows
+  nothing about `App` — `roster_tick` returns a `Roster_Result` the host
+  applies (`apply_roster` in `main.odin`), which is what lets `main` import it.
+  - `fofoca_ffi.odin` is the raw C binding, mirroring
+    `fofoca/crates/fofoca-ffi/include/fofoca.h`. Its entry points keep the
+    header's bare names (`open`, `recv`, `send`) via `@(link_name)`, which is
+    why the room opener is `p2p.start` rather than `p2p.open`.
 
 - **`src/main.odin` (package `main`)** — the host. Owns the karl2d window,
   input, rendering, the clock, and **all** file I/O. The `App` struct holds all

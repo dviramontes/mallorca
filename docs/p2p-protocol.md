@@ -1,11 +1,14 @@
 # P2P room protocol
 
 Wire protocol for mallorca's serverless p2p rooms, built on
-[agent-habilis-mesh](https://github.com/agent-habilis) (an iroh-based gossip
-mesh, vendored into `agent-habilis-mesh/`). Replaces the Phoenix host↔server
+[fofoca](https://github.com/fofoca-network/fofoca) (an iroh-based gossip
+mesh, cloned into `fofoca/` by `just setup`). Replaces the Phoenix host↔server
 link described in [m6-network-protocol.md](m6-network-protocol.md) (superseded,
-kept for historical context). See `src/mesh.odin` for the FFI binding and
-`src/p2p.odin` for the state machine that implements this document.
+kept for historical context). See `src/p2p/` for the state machine that
+implements this document, and `src/p2p/fofoca_ffi.odin` for the raw C binding.
+[ffi-cost.md](ffi-cost.md) measures what the mesh costs in binary size, CPU and
+RAM — including a ~5 s render-thread stall on join that this document's cadence
+rules do not account for.
 
 ## 1. Model
 
@@ -36,11 +39,27 @@ There is exactly one message type.
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `snapshot` | `w`, `h`, `grid`, `tick` | The sender's evaluated grid. `grid` is a single row-major string of length `w*h`, `.` for empty — the same encoding M6 used (§2 there), reused verbatim. |
+| `snapshot` | `w`, `h`, `grid`, `tick`, `ink?` | The sender's evaluated grid. `grid` is a single row-major string of length `w*h`, `.` for empty — the same encoding M6 used (§2 there), reused verbatim. Optional `ink` is a sparse array of `{x,y,s}` for every cell the sender has user-edited (`s` is that peer's monotonic edit generation, `s > 0`). Glyphs stay in `grid`; `ink` only carries authorship time for jam last-write-wins. |
 
 Any other `t` is dropped without error (forward-compatible with future message
-types, e.g. cursor sharing). There is no envelope beyond `t` — no sender id
-field, because the mesh frame itself already carries the sender's nickname.
+types, e.g. cursor sharing). Unknown fields (including a missing `ink`) are
+ignored. There is no envelope beyond `t` — no sender id field, because the mesh
+frame itself already carries the sender's nickname.
+
+### Jam canvas (last-write-wins)
+
+Each peer still ticks only its own grid. The host view composites local + remote
+grids per cell:
+
+1. Among local and every remote, the entry with the highest ink `s` wins —
+   including when that glyph is `.` (a clear beats an older remote glyph).
+2. Winner color: local → white (author's own ink); remote → that peer's
+   palette color, chosen by hashing their nickname into `REMOTE_TINTS`.
+3. If every `s` is 0 (no user claim on that cell): legacy behavior — local
+   glyph if non-empty, else remotes in join order on empty local cells.
+
+Remote glyphs are never copied into the local VM; LWW is display-only so MIDI
+authority stays per-peer.
 
 Cadence: while playing, at most one snapshot per tick (~8/s at 120 BPM ÷ 4
 frames/beat), broadcast to every peer. While paused, one snapshot per applied
@@ -54,13 +73,17 @@ There are no `player_join`/`player_leave` messages. Once per second,
 `{"peers":[{"nickname":…},…],"count":N}`) and diffs the nicknames against
 the peers already tracked:
 
-- **New nickname** → create a sim for it (grid sized to match ours, tint =
-  next monotonic join-order color) and send it one **directed** snapshot of
+- **New nickname** → create a sim for it (grid sized to match ours; draw
+  color = hash(nickname) into the peer palette; a separate join-order id is
+  used only for `` ` `` view cycling) and send it one **directed** snapshot of
   our own grid — a backfill, because mesh frames aren't retained and a peer
   that joined mid-session has seen nothing yet. A transient status line
   announces the join.
 - **Nickname no longer present** → free its sim and drop its partial-line
   receive buffer. A transient status line announces the leave.
+- **Roster JSON unreadable while `mesh_peer_count > 0`** → skip join/leave
+  reconciliation that tick (keep existing sims). Avoids a grow-during-read
+  empty parse wiping every remote.
 - **Own nickname present in the roster** → warned once (nickname collision
   with another peer in the same room); this is cosmetic only, mesh routing is
   by its own peer identity, not the display nickname.
@@ -81,7 +104,7 @@ Local UI state only, never sent on the wire, driven by `mesh_peer_count()`:
 ## 6. Shared transport state (bpm/playing)
 
 `mesh_state_merge`/`mesh_state_json` expose a per-room RFC 7386 JSON document,
-CRDT-merged across peers (see agent-habilis-mesh's `mesh-state` extension).
+CRDT-merged across peers (see fofoca's `mesh-state` extension).
 `p2p_share_transport(st, bpm, playing)` marshals `{bpm, playing}` and merges it
 into that doc; `toggle_play` and `adjust_bpm` (`main.odin`) call it whenever
 the local player changes tempo or play/pause, so every transport change gets
@@ -122,7 +145,9 @@ mallorca [file] [--create-room | --join-room=<HASH>] [--room-name=<NAME>]
 - Default `--nick` is `$USER-<4 lowercase hex>`.
 - Rooms default to public/discoverable (`is_public=1`, `mdns=1`, `dht=1`,
   `relay=1`); `--private`, `--no-mdns`, `--no-dht`, `--no-relay` each flip one
-  off. `--max-peers` caps room size (0 = unlimited).
+  off. `--max-peers=N` caps HyParView neighbors / PeerInfo dials (default
+  **64** when omitted or `0` — not unlimited). A mistaken small value (e.g.
+  `--max-peers=2`) yields a 3-participant room.
 - The old `--net-host`, `--net-spike`, `--headless`, and `--room=` flags are
   removed and hard-error with a hint to use `--create-room` / `--join-room`.
 
