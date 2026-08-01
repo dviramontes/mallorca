@@ -4,6 +4,9 @@ All notable changes to Mallorca are documented in this file.
 
 ## [Unreleased]
 
+[2026.08.01] add: keyboard zoom for the grid display — `Cmd/Ctrl` + `+` / `-`
+scales cells and font between 50% and 300% without changing the simulation grid
+
 ### Changed
 
 - Changed MIDI channel routing from Orca's default behavior:
