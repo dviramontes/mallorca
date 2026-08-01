@@ -4,10 +4,8 @@ All notable changes to Mallorca are documented in this file.
 
 ## [Unreleased]
 
-### Added
-
-- Keyboard zoom for the grid display: `Cmd/Ctrl` + `+` / `-` scales cells and
-  font between 50% and 300% without changing the simulation grid.
+[2026.08.01] add: keyboard zoom for the grid display — `Cmd/Ctrl` + `+` / `-`
+scales cells and font between 50% and 300% without changing the simulation grid
 
 ### Changed
 
