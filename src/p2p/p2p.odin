@@ -1,5 +1,5 @@
 // Room lifecycle for mallorca's p2p mode: state machine on top of the
-// fofoca binding (mesh.odin). Replaces net.odin's Phoenix
+// fofoca binding (fofoca_ffi.odin). Replaces net.odin's Phoenix
 // host/client with serverless snapshot streaming — see the design plan
 // ("Key design decisions", "Phase 4") for the snapshot-not-replay rationale.
 package p2p
@@ -60,7 +60,7 @@ Cli_Opts :: struct {
 
 State :: struct {
 	pipe:                ^Pipe,
-	// Owns every FFI call once open; see fofoca_worker.odin. nil until open
+	// Owns every FFI call once open; see worker.odin. nil until open
 	// succeeds, so a single-player session spawns no thread and no queues.
 	worker:              ^Worker,
 	room_name:           string,

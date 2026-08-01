@@ -123,6 +123,11 @@ REMOTE_TINTS :: [?]k2.Color {
 	{0xd6, 0x6b, 0x5e, 0xff}, // coral
 }
 
+// The palette length is the modulus p2p.tint_from_name hashes into, so a peer's
+// color is only stable if the two agree. Catch drift at compile time rather
+// than silently wrapping a stray tint index.
+#assert(len(REMOTE_TINTS) == p2p.TINT_COUNT)
+
 DEFAULT_W :: 57
 DEFAULT_H :: 25
 
@@ -182,7 +187,7 @@ App :: struct {
 
 	// P2P room (replaces the old Phoenix host/net link): peers stream full-grid
 	// snapshots directly over the mesh; `p2p.status` drives the connection
-	// indicator. See mesh.odin/p2p.odin.
+	// indicator. See src/p2p/.
 	p2p:          p2p.State,
 	p2p_active:   bool,
 	// The Phoenix relay transport (net.odin). Mutually exclusive with `p2p`
@@ -2095,9 +2100,6 @@ draw_room_status :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
 	k2.draw_text("^R copy id", {x, y}, size, STATUS, font)
 }
 
-// Truncate the bare room hash for HUD display (first10…last6). `app.p2p.hash`
-// is already glyph-free; this only shortens.
-@(private = "file")
 // Apply what a roster tick decided. The p2p package is deliberately unaware of
 // `App` — it returns outcomes and this is where they land, so the mesh layer
 // never reaches into the host's status line or transport clock.
@@ -2116,6 +2118,9 @@ apply_roster :: proc(app: ^App, res: p2p.Roster_Result) {
 	}
 }
 
+// Truncate the bare room hash for HUD display (first10…last6). `app.p2p.hash`
+// is already glyph-free; this only shortens.
+@(private = "file")
 p2p_hash_display :: proc(hash: string) -> string {
 	if len(hash) <= 16 {
 		return hash

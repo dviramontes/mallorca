@@ -25,12 +25,12 @@ no host: every peer in a room is a symmetric participant.
 
 ## 2. Transport
 
-Messages ride mesh frames (`mesh_send`/`mesh_recv` in `mesh.odin`), each frame
-a chunk of a byte stream to or from one peer, identified by mesh nickname —
+Messages ride mesh frames (`send`/`recv` in `src/p2p/fofoca_ffi.odin`), each
+frame a chunk of a byte stream to or from one peer, identified by mesh nickname —
 not a message boundary. Framing is newline-delimited JSON: each logical
 message is one JSON object followed by `\n`; a receiver accumulates bytes
 per-sender-nick and splits complete lines off the front of that buffer as they
-arrive (`p2p_poll` in `p2p.odin`). A frame carrying your own nickname (the
+arrive (`poll` in `src/p2p/p2p.odin`). A frame carrying your own nickname (the
 mesh's self-echo on a broadcast) is dropped unprocessed.
 
 ## 3. Message catalog
@@ -69,7 +69,7 @@ edit. Broadcasts are skipped entirely when the room has no other peers
 ## 4. Presence: roster polling, not join/leave messages
 
 There are no `player_join`/`player_leave` messages. Once per second,
-`p2p_roster_tick` calls `mesh_peers_json()` (the agent-gossip roster document
+`roster_tick` calls `peers_json` (the agent-gossip roster document
 `{"peers":[{"nickname":…},…],"count":N}`) and diffs the nicknames against
 the peers already tracked:
 
@@ -103,22 +103,22 @@ Local UI state only, never sent on the wire, driven by `mesh_peer_count()`:
 
 ## 6. Shared transport state (bpm/playing)
 
-`mesh_state_merge`/`mesh_state_json` expose a per-room RFC 7386 JSON document,
+`state_merge`/`state_json` expose a per-room RFC 7386 JSON document,
 CRDT-merged across peers (see fofoca's `mesh-state` extension).
-`p2p_share_transport(st, bpm, playing)` marshals `{bpm, playing}` and merges it
+`share_transport(st, bpm, playing)` marshals `{bpm, playing}` and merges it
 into that doc; `toggle_play` and `adjust_bpm` (`main.odin`) call it whenever
 the local player changes tempo or play/pause, so every transport change gets
 pushed, not just the value at some poll interval.
 
-Adoption happens once per second, folded into `p2p_roster_tick`: it reads the
-merged doc back with `mesh_state_json` and applies a field only when it
-differs from **both** the app's current local value and `P2p_State`'s
+Adoption happens once per second, folded into `roster_tick`: it reads the
+merged doc back with `state_json` and applies a field only when it
+differs from **both** the app's current local value and `p2p.State`'s
 `last_synced_bpm`/`last_synced_playing`. That second check is a feedback
 guard — without it, a peer's own merge would round-trip back through the CRDT
 doc on the next poll and get misread as a remote change, self-triggering a
 `"bpm synced to N"` / `"playing (synced)"` status message for a value that
 peer already set itself. `last_synced_*` is updated on both the push side
-(`p2p_share_transport`) and the adopt side, so either one "claims" a value and
+(`share_transport`) and the adopt side, so either one "claims" a value and
 the other's poll treats it as already known.
 
 There is no leader election: whichever peer's merge lands last in the CRDT
