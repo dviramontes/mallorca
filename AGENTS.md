@@ -52,8 +52,22 @@ for a build with the timing instrumentation compiled in.
 root-causes those numbers and drove the crate split; it moved to the fofoca
 repo with the engine.
 
-Mallorca's networking used to go through a Phoenix relay server
-(`server/`, Elixir); that's gone. Rooms are now serverless — see below.
+Mallorca has two independent multiplayer transports, chosen at launch and
+never both in one session:
+
+- **Serverless mesh** (`--create-room` / `--join-room`) — native peers stream
+  snapshots to each other over fofoca. See below and
+  [docs/p2p-protocol.md](docs/p2p-protocol.md).
+- **Phoenix relay** (`--net-host`, needs `just server`) — the Elixir app in
+  `server/` accepts a host over TCP on :4001 and serves browser players at
+  `http://localhost:4000/room/MYROOM`, plus an admin dashboard at `/admin`.
+  See [docs/m6-network-protocol.md](docs/m6-network-protocol.md).
+
+They differ in more than transport: the relay runs a VM per remote player on
+the host and replays their edits, while the mesh treats peers as snapshot
+replicas that are never ticked locally. `src/net.odin` is the relay client;
+`src/p2p/` is the mesh. Only the small `Remote_View` projection in
+`main.odin` is shared between them.
 
 ## Commands
 

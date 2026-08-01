@@ -81,6 +81,11 @@ run file="" *flags="": build
 create-room file="" room_name="": build
     {{app_exe}} "{{file}}" --create-room {{ if room_name != "" { "--room-name=" + room_name } else { "" } }}
 
+# run as the network host (relay transport); needs `just server` running.
+# `just host` gets a server-assigned room; `just host CODE` joins a specific one.
+host room="" *flags="": build
+    {{app_exe}} --net-host --room={{room}} {{flags}}
+
 # join a p2p room by its bare base58 hash (printed by create-room)
 join-room hash file="": build
     {{app_exe}} "{{file}}" --join-room={{hash}}
@@ -152,6 +157,14 @@ test: fofoca
     odin test src/core
     odin test src/p2p
     odin test src {{defines}}
+
+# fetch server deps and create the SQLite dev database (run once after setup)
+server-setup:
+    cd server && mix deps.get && mix ecto.create
+
+# run the Phoenix server (relay transport) at http://localhost:4000
+server:
+    cd server && mix phx.server
 
 # remove build artifacts
 clean:

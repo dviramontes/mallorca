@@ -178,6 +178,11 @@ App :: struct {
 	// indicator. See mesh.odin/p2p.odin.
 	p2p:          p2p.State,
 	p2p_active:   bool,
+	// The Phoenix relay transport (net.odin). Mutually exclusive with `p2p`
+	// above: `--net-host` and `--create-room`/`--join-room` are rejected
+	// together, so only one of these is ever live.
+	host:         Host_State,
+	host_active:  bool,
 
 	// Per-cell user-edit generation for jam LWW (parallel to grid.cells).
 	// `edit_seq` is a monotonic counter; stamped cells carry the value at
@@ -245,6 +250,11 @@ main :: proc() {
 	//   [--create-room | --join-room=<HASH>] [--room-name=<NAME>] [--nick=<NICK>]
 	//   [--private] [--no-mdns] [--no-dht] [--no-relay] [--max-peers=<N>]
 	debug := false
+	// Relay transport (net.odin, docs/m6-network-protocol.md).
+	net_spike := false
+	net_host := false
+	headless := false
+	room := ""
 	cli: p2p.Cli_Opts
 	has_create := false
 	has_join := false
@@ -294,12 +304,14 @@ main :: proc() {
 			}
 			cli.max_peers = n
 			room_flag_seen = true
-		case arg == "--net-host" || arg == "--net-spike" || arg == "--headless":
-			fmt.eprintfln("mallorca: %s was removed — use --create-room / --join-room", arg)
-			os.exit(1)
+		case arg == "--net-spike":
+			net_spike = true
+		case arg == "--net-host":
+			net_host = true
+		case arg == "--headless":
+			headless = true
 		case strings.has_prefix(arg, "--room="):
-			fmt.eprintln("mallorca: --room was removed — use --create-room / --join-room")
-			os.exit(1)
+			room = arg[len("--room="):]
 		case arg != "" && app.file_name == "":
 			app.file_name = arg
 		}
@@ -310,6 +322,24 @@ main :: proc() {
 		os.exit(1)
 	}
 	p2p_requested := has_create || has_join
+	// One transport per run. They keep separate rosters and separate meanings
+	// for `view_tint`, and nothing reconciles the two.
+	if net_host && p2p_requested {
+		fmt.eprintln("mallorca: --net-host and --create-room/--join-room are mutually exclusive")
+		os.exit(1)
+	}
+	if room != "" && !net_host {
+		fmt.eprintln("mallorca: --room has no effect without --net-host (running as local client)")
+	}
+	// The headless spike and the headless host never open a window.
+	if net_spike {
+		run_net_spike()
+		return
+	}
+	if net_host && headless {
+		run_net_host(debug, room)
+		return
+	}
 	if !p2p_requested && room_flag_seen {
 		fmt.eprintln("mallorca: room flags require --create-room or --join-room")
 		os.exit(1)
@@ -323,6 +353,25 @@ main :: proc() {
 	// p2p.open must succeed (or fail) before the window opens: on success the
 	// full room hash is on stdout for a peer to join with; on failure the app
 	// exits without ever creating a window.
+	// Windowed relay host: connect and simulate remote players in the
+	// background. The window renders/edits our own grid; the link indicator
+	// shows connection status.
+	if net_host {
+		st, ok := host_connect(room)
+		app.host = st
+		app.host_active = true
+		app.view_tint = HOST_VIEW
+		if ok {
+			fmt.printfln(
+				"mallorca: hosting room %s — http://localhost:4000/room/%s",
+				st.room,
+				st.room,
+			)
+		} else {
+			fmt.eprintln("mallorca: could not reach the server; running offline")
+		}
+	}
+
 	if p2p_requested {
 		when MALLORCA_PROFILE {
 			t_open := prof_now()
@@ -376,6 +425,9 @@ main :: proc() {
 	defer delete(app.sus)
 	defer clear_undo(&app)
 	defer midi_shutdown(&app.midi)
+	defer if app.host_active {
+		host_shutdown(&app.host)
+	}
 	defer if app.p2p_active {
 		p2p.shutdown(&app.p2p)
 	}
@@ -430,6 +482,9 @@ main :: proc() {
 		}
 		if !quit {
 			handle_input(&app)
+			if app.host_active {
+				host_poll(&app.host) // apply remote edits/joins before ticking
+			}
 			if app.p2p_active {
 				when MALLORCA_PROFILE {
 					t_poll := prof_now()
@@ -455,7 +510,7 @@ main :: proc() {
 					prof_record(&prof_roster, prof_since(t_roster))
 				}
 				// If the peer we were viewing left, fall back to our grid.
-				if app.view_tint != HOST_VIEW && viewed_sim(&app) == nil {
+				if _, still_there := viewed_sim(&app); app.view_tint != HOST_VIEW && !still_there {
 					app.view_tint = HOST_VIEW
 				}
 			}
@@ -466,13 +521,13 @@ main :: proc() {
 			// The window shows either our own grid or a remote player's
 			// (read-only, in that player's color). Layout follows whichever
 			// grid is on screen, since sizes can differ.
-			view := viewed_sim(&app)
-			disp := view.grid if view != nil else app.grid
+			view, has_view := viewed_sim(&app)
+			disp := view.grid if has_view else app.grid
 			hud := status_font(disp)
 			layout := compute_layout(disp, status_band(&app, hud))
 			k2.clear(BG)
 			draw_border(&app, disp, layout)
-			if view != nil {
+			if has_view {
 				draw_grid(view.grid, view.marks, font, layout, remote_tint(view.tint))
 			} else {
 				// Jam canvas: LWW compose of our grid + every remote peer.
@@ -494,7 +549,7 @@ main :: proc() {
 				layout,
 				app.cursor_x,
 				app.cursor_y,
-				view == nil,
+				!has_view,
 			)
 			draw_conn(&app)
 			draw_operator_overview(&app, font)
@@ -620,13 +675,13 @@ handle_input :: proc(app: ^App) {
 
 	// P2p: cycle the window between our own grid and each remote peer's grid.
 	// '`' steps forward, Shift+'`' backward.
-	if app.p2p_active && k2.key_went_down(.Backtick) {
+	if (app.p2p_active || app.host_active) && k2.key_went_down(.Backtick) {
 		cycle_view(app, -1 if shift_held() else +1)
 	}
 
 	// While viewing a remote player's grid the window is read-only: only the
 	// view cycle (above) and play/pause act; all edits are suppressed.
-	if viewed_sim(app) != nil {
+	if _, viewing := viewed_sim(app); viewing {
 		if k2.key_went_down(.Space) {
 			toggle_play(app)
 		}
@@ -761,16 +816,42 @@ HOST_VIEW :: -1
 
 // The remote peer's sim currently on screen, or nil when we're showing our
 // own grid (or the viewed peer has since left).
-viewed_sim :: proc(app: ^App) -> ^p2p.Peer_Sim {
-	if !app.p2p_active || app.view_tint == HOST_VIEW {
-		return nil
+// What the renderer needs from a remote participant, whichever transport
+// produced it. The relay ticks a VM per player (`Host_Sim`) while the mesh
+// keeps untickable snapshot replicas (`p2p.Peer_Sim`), so the two keep their
+// own structs and only this projection is shared.
+Remote_View :: struct {
+	grid:  orca.Grid,
+	marks: []orca.Mark,
+	name:  string,
+	tint:  int,
+	tick:  uint,
+}
+
+// The remote participant on screen, or ok=false when we're showing our own
+// grid (or the one being viewed has since left).
+viewed_sim :: proc(app: ^App) -> (view: Remote_View, ok: bool) {
+	if app.view_tint == HOST_VIEW {
+		return
 	}
-	for _, sim in app.p2p.sims {
-		if sim.view_id == app.view_tint {
-			return sim
+	// Relay mode keys the view on `tint`, mesh mode on `view_id`; only one
+	// transport is ever active, so the two never race for `view_tint`.
+	if app.host_active {
+		for _, sim in app.host.sims {
+			if sim.tint == app.view_tint {
+				return Remote_View{sim.grid, sim.marks, sim.name, sim.tint, sim.tick}, true
+			}
+		}
+		return
+	}
+	if app.p2p_active {
+		for _, sim in app.p2p.sims {
+			if sim.view_id == app.view_tint {
+				return Remote_View{sim.grid, sim.marks, sim.name, sim.tint, sim.tick}, true
+			}
 		}
 	}
-	return nil
+	return
 }
 
 // Per-player glyph color from REMOTE_TINTS (index = hash of nickname).
@@ -782,15 +863,21 @@ remote_tint :: proc(tint: int) -> k2.Color {
 // Step the window's view across participants: our own grid (HOST_VIEW) then
 // each remote peer in join order (view_id), wrapping around. `dir` is +1 or -1.
 cycle_view :: proc(app: ^App, dir: int) {
-	if !app.p2p_active {
+	if !app.p2p_active && !app.host_active {
 		return
 	}
 	// Ordered participant list: HOST_VIEW first, then remote view_ids ascending
 	// (assigned monotonically on join).
 	ids := make([dynamic]int, context.temp_allocator)
 	append(&ids, HOST_VIEW)
-	for _, sim in app.p2p.sims {
-		append(&ids, sim.view_id)
+	if app.host_active {
+		for _, sim in app.host.sims {
+			append(&ids, sim.tint)
+		}
+	} else {
+		for _, sim in app.p2p.sims {
+			append(&ids, sim.view_id)
+		}
 	}
 	slice.sort(ids[:])
 
@@ -803,7 +890,7 @@ cycle_view :: proc(app: ^App, dir: int) {
 	}
 	app.view_tint = ids[(cur + dir + len(ids)) %% len(ids)]
 
-	if sim := viewed_sim(app); sim != nil {
+	if sim, ok := viewed_sim(app); ok {
 		name := sim.name if sim.name != "" else "player"
 		set_status(app, fmt.aprintf("viewing %s (read-only)", name))
 	} else {
@@ -1233,6 +1320,10 @@ update_sim :: proc(app: ^App) {
 		for app.accum >= frame && ticks < MAX_TICKS_PER_FRAME {
 			app.accum -= frame
 			step_tick(app) // our own grid (runs advance_notes once for all)
+			if app.host_active {
+				host_tick(&app.host, &app.midi, &app.sus) // remote players
+				host_send_own(&app.host, app.grid, app.tick) // our grid -> /admin
+			}
 			if app.p2p_active {
 				when MALLORCA_PROFILE {
 					t_send := prof_now()
@@ -1364,15 +1455,24 @@ draw_border :: proc(app: ^App, grid: orca.Grid, layout: Layout) {
 // A small square in the top-right showing p2p room connection status.
 // Drawn only when a room is open.
 draw_conn :: proc(app: ^App) {
-	if !app.p2p_active {
-		return
-	}
 	color := CONN_BAD
-	#partial switch app.p2p.status {
-	case .Connected:
-		color = CONN_OK
-	case .Alone:
-		color = CONN_WAIT
+	switch {
+	case app.host_active:
+		#partial switch app.host.status {
+		case .Connected:
+			color = CONN_OK
+		case .Connecting:
+			color = CONN_WAIT
+		}
+	case app.p2p_active:
+		#partial switch app.p2p.status {
+		case .Connected:
+			color = CONN_OK
+		case .Alone:
+			color = CONN_WAIT
+		}
+	case:
+		return
 	}
 	size: f32 = 14
 	x := f32(k2.get_screen_width()) - MARGIN - size
@@ -1798,7 +1898,7 @@ draw_status :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
 	text: string
 	if app.status_msg != "" {
 		text = app.status_msg
-	} else if sim := viewed_sim(app); sim != nil {
+	} else if sim, ok := viewed_sim(app); ok {
 		who := sim.name if sim.name != "" else "player"
 		text = fmt.tprintf(
 			"viewing %s   %dx%d   %dt   read-only   ` to cycle",
