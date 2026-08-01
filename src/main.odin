@@ -21,6 +21,12 @@ FONT_ITALIC_DATA :: #load("../assets/JetBrainsMono-Italic.ttf")
 // that, the grid scales to fill the window width.
 INITIAL_FONT_SIZE :: 32
 
+// Keyboard zoom scales the window-derived grid size. Keep the range bounded so
+// zooming out never makes the field illegible and zooming in stays manageable.
+ZOOM_STEP :: f32(0.1)
+ZOOM_MIN :: f32(0.5)
+ZOOM_MAX :: f32(3.0)
+
 // Play-state border: a solid frame inset from the window edges; green
 // while playing, absent while paused.
 BORDER_INSET :: 10
@@ -104,6 +110,7 @@ App :: struct {
 	audition:     bool, // Enter held: sounding the middle-C audition tone
 	debug:        bool, // --debug: log edit/selection/clipboard activity
 	show_guide:   bool, // Ctrl/Cmd+G operator overview
+	zoom:         f32, // Ctrl/Cmd +/- grid display scale
 
 	// Cursor blink: `blink` accumulates seconds and toggles visibility every
 	// BLINK_INTERVAL; movement resets it so the cursor is always shown while
@@ -235,6 +242,7 @@ main :: proc() {
 	app.debug = debug
 	app.marks = orca.make_marks(app.grid)
 	app.bpm = DEFAULT_BPM
+	app.zoom = 1
 	app.dirty = true // preview marks for the freshly loaded grid
 	app.midi = midi_init(debug)
 
@@ -310,7 +318,7 @@ main :: proc() {
 			// grid is on screen, since sizes can differ.
 			view := viewed_sim(&app)
 			disp := view.grid if view != nil else app.grid
-			layout := compute_layout(disp)
+			layout := compute_layout(disp, app.zoom)
 			k2.clear(BG)
 			draw_border(&app)
 			if view != nil {
@@ -535,6 +543,10 @@ handle_input :: proc(app: ^App) {
 
 // Ctrl/Cmd chords. Ctrl+arrows resize the grid; the rest are single keys.
 handle_shortcuts :: proc(app: ^App) {
+	// '+' is Shift+'=' on the main keyboard. Looking for Equal while the
+	// modifier is held supports Ctrl/Cmd+'+' (and the conventional '=' alias).
+	if k2.key_went_down(.Equal) {adjust_zoom(app, +ZOOM_STEP)}
+	if k2.key_went_down(.Minus) {adjust_zoom(app, -ZOOM_STEP)}
 	if k2.key_went_down(.Left) {resize_grid_by(app, -1, 0)}
 	if k2.key_went_down(.Right) {resize_grid_by(app, +1, 0)}
 	if k2.key_went_down(.Up) {resize_grid_by(app, 0, -1)}
@@ -552,6 +564,11 @@ handle_shortcuts :: proc(app: ^App) {
 	if k2.key_went_down(.V) {paste_clip(app)}
 	if k2.key_went_down(.A) {select_all(app)}
 	if k2.key_went_down(.Z) {undo(app)}
+}
+
+adjust_zoom :: proc(app: ^App, delta: f32) {
+	app.zoom = clamp(app.zoom + delta, ZOOM_MIN, ZOOM_MAX)
+	set_status(app, fmt.aprintf("zoom %.0f%%", app.zoom * 100))
 }
 
 // Toggle playback of the shared clock (drives our grid and every remote sim).
@@ -1065,9 +1082,10 @@ Layout :: struct {
 	font_size: f32,
 }
 
-// The grid always spans the full window width; cell and font size follow.
-compute_layout :: proc(grid: orca.Grid) -> Layout {
-	cell_w := (f32(k2.get_screen_width()) - MARGIN * 2) / f32(grid.width)
+// At 100%, the grid spans the full window width. Keyboard zoom scales the
+// resulting cells and font together without changing the simulation grid.
+compute_layout :: proc(grid: orca.Grid, zoom: f32) -> Layout {
+	cell_w := (f32(k2.get_screen_width()) - MARGIN * 2) / f32(grid.width) * zoom
 	font_size := cell_w / ADVANCE_EM
 	return Layout{cell_w = cell_w, cell_h = font_size * LINE_EM, font_size = font_size}
 }
