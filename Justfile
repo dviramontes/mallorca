@@ -56,6 +56,13 @@ check: fofoca
     odin check src/core -no-entry-point
     odin check src/p2p -no-entry-point
 
+# regenerate assets/mallorca.icns from the CoreGraphics scene in
+# assets/icon/render_icon.swift (no SVG rasterizer on the build machine)
+icon:
+    rm -rf assets/icon/mallorca.iconset
+    swift assets/icon/render_icon.swift assets/icon/mallorca.iconset
+    iconutil -c icns assets/icon/mallorca.iconset -o assets/mallorca.icns
+
 # format application and core Odin sources
 fmt:
     for f in src/*.odin src/core/*.odin src/p2p/*.odin; do [ -f "$f" ] && odinfmt -w "$f"; done

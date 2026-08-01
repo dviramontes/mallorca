@@ -92,8 +92,21 @@ Two macOS details the recipes handle, both easy to reintroduce:
 
 `src/icon.odin` additionally embeds `assets/mallorca.icns` and sets it as the
 Dock tile at startup, which is what a bare `bin/mallorca` (outside the bundle)
-relies on. Regenerate the icon from `assets/icon/island.svg` with
-`swift assets/icon/render_icon.swift <out.iconset>` + `iconutil -c icns`.
+relies on.
+
+`just icon` regenerates `assets/icon/mallorca.iconset/` and
+`assets/mallorca.icns` from the CoreGraphics scene in
+`assets/icon/render_icon.swift` (`assets/icon/island.svg` describes the same
+scene, but nothing rasterizes it — there is no SVG rasterizer on the build
+machine). The scene is drawn in a 1024 space and `makeImage` places it on
+Apple's grid: a body covering 824 of the 1024 canvas, a drop shadow at 256px and
+up, and the corner from `squirclePath` rather than a circular arc. Those numbers
+come from tracing the alpha edge of Terminal's, Notes' and Finder's icns, which
+are identical to the pixel: the corner fits a superellipse with a box of 0.3013
+of the body and an exponent of 2.85 to within 1.1px rms, where the documented
+circular radius of 185.4 is 3x worse. Getting the grid wrong is visible — a
+full-bleed icon, which is what this repo shipped until `just icon` existed,
+stands ~24% larger than every neighbour in the Dock.
 
 Run a single core test by name:
 
