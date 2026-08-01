@@ -130,6 +130,7 @@ plays through its MIDI output. The dashboard at `http://localhost:4000/admin`
 | `Cmd/Ctrl` + `A` | Select the whole grid |
 | `Cmd/Ctrl` + `C` / `X` / `V` | Copy / cut / paste the selection |
 | `Cmd/Ctrl` + `Z` | Undo the last edit |
+| `Cmd/Ctrl` + `+` / `-` | Zoom the grid display in / out (50%–300%) |
 | `Cmd/Ctrl` + `F` | Advance one simulation frame |
 | `Cmd/Ctrl` + `G` | Toggle the operator overview |
 | `Cmd/Ctrl` + `S` | Save the grid |
