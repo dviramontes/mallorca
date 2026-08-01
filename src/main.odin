@@ -393,6 +393,7 @@ main :: proc() {
 	// karl2d has an NSApplication by now; give its Dock tile the island icon
 	// for the runs that are not launched from bin/Mallorca.app.
 	set_dock_icon()
+	setup_menu_bar()
 	when MALLORCA_PROFILE {
 		prof_init_us = prof_us_since(prof_boot)
 		// Start the clock and the run window only once the window is up, so
