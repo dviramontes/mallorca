@@ -47,6 +47,37 @@ BLINK_INTERVAL :: 0.53
 // heads-up/debug text, secondary to the grid.
 STATUS_SCALE :: 0.6
 
+// The HUD glyph size, derived from the *width* fit alone.
+//
+// It deliberately does not read the final `Layout.font_size`: the band's height
+// feeds `compute_layout`'s height fit, so a HUD size taken from the finished
+// layout would be circular. The width fit is what the HUD used before the band
+// existed, so this keeps its old size while letting the grid shrink under it
+// when height-constrained.
+status_font :: proc(grid: orca.Grid) -> f32 {
+	width_fit := (f32(k2.get_screen_width()) - MARGIN * 2) / f32(grid.width) / ADVANCE_EM
+	return width_fit * STATUS_SCALE
+}
+
+// HUD rows, counting 1 from the bottom: 1 is the status line (always present),
+// 2 is the peer legend (left) and hover readout (right), 3 is the room line.
+//
+// Row 2 stays reserved even when empty. The hover readout comes and goes with
+// the pointer, so a band that tracked it would rescale the whole grid every
+// time the cursor crossed an operator.
+status_rows :: proc(app: ^App) -> int {
+	return 3 if app.p2p_active else 2
+}
+
+status_band :: proc(app: ^App, hud: f32) -> f32 {
+	return f32(status_rows(app)) * hud * LINE_EM + MARGIN
+}
+
+// Baseline y of HUD row `row`, counting 1 from the bottom.
+status_row_y :: proc(hud: f32, row: int) -> f32 {
+	return f32(k2.get_screen_height()) - f32(row) * hud * LINE_EM - MARGIN
+}
+
 // Orca-ish theme.
 BG :: k2.Color{0x17, 0x17, 0x17, 0xff}
 FG :: k2.Color{0xf0, 0xf0, 0xf0, 0xff}
@@ -354,7 +385,9 @@ main :: proc() {
 
 	window_w := MARGIN * 2 + app.grid.width * (INITIAL_FONT_SIZE * 3 / 5)
 	window_h :=
-		MARGIN * 2 + app.grid.height * (INITIAL_FONT_SIZE * 23 / 20) + INITIAL_FONT_SIZE + MARGIN
+		MARGIN * 2 +
+		app.grid.height * (INITIAL_FONT_SIZE * 23 / 20) +
+		int(math.ceil(f32(2 * INITIAL_FONT_SIZE * STATUS_SCALE * LINE_EM + MARGIN)))
 	k2.init(window_w, window_h, "mallorca", {window_mode = .Windowed_Resizable})
 	defer k2.shutdown()
 	when MALLORCA_PROFILE {
@@ -431,9 +464,10 @@ main :: proc() {
 			// grid is on screen, since sizes can differ.
 			view := viewed_sim(&app)
 			disp := view.grid if view != nil else app.grid
-			layout := compute_layout(disp)
+			hud := status_font(disp)
+			layout := compute_layout(disp, status_band(&app, hud))
 			k2.clear(BG)
-			draw_border(&app)
+			draw_border(&app, disp, layout)
 			if view != nil {
 				draw_grid(view.grid, view.marks, font, layout, remote_tint(view.tint))
 			} else {
@@ -446,10 +480,18 @@ main :: proc() {
 				}
 				draw_cursor(&app, font, layout)
 			}
-			draw_legend(&app, font, layout)
-			draw_room_status(&app, font, layout)
-			draw_status(&app, font, layout)
-			draw_hover_readout(disp, font_italic, layout, app.cursor_x, app.cursor_y, view == nil)
+			draw_legend(hud, &app, font, layout)
+			draw_room_status(hud, &app, font, layout)
+			draw_status(hud, &app, font, layout)
+			draw_hover_readout(
+				hud,
+				disp,
+				font_italic,
+				layout,
+				app.cursor_x,
+				app.cursor_y,
+				view == nil,
+			)
 			draw_conn(&app)
 			draw_operator_overview(&app, font)
 			k2.present()
@@ -1269,27 +1311,48 @@ Layout :: struct {
 	cell_w:    f32,
 	cell_h:    f32,
 	font_size: f32,
+	// Top-left of the grid in window coordinates. Not a constant `MARGIN` any
+	// more: the grid is centred in whatever the status band leaves, so the
+	// letterbox has to be carried rather than assumed.
+	origin_x:  f32,
+	origin_y:  f32,
 }
 
-// The grid always spans the full window width; cell and font size follow.
-compute_layout :: proc(grid: orca.Grid) -> Layout {
-	cell_w := (f32(k2.get_screen_width()) - MARGIN * 2) / f32(grid.width)
-	font_size := cell_w / ADVANCE_EM
-	return Layout{cell_w = cell_w, cell_h = font_size * LINE_EM, font_size = font_size}
+// Fit the grid into the window above `band`, scaling to whichever axis binds
+// first so the whole grid is always on screen, then centre it in the leftover.
+//
+// This used to fit width only, which is why the grid could run past the bottom
+// of the window and under the HUD.
+compute_layout :: proc(grid: orca.Grid, band: f32) -> Layout {
+	avail_w := f32(k2.get_screen_width()) - MARGIN * 2
+	avail_h := f32(k2.get_screen_height()) - band - MARGIN * 2
+	font_size := min(
+		avail_w / (f32(grid.width) * ADVANCE_EM),
+		avail_h / (f32(grid.height) * LINE_EM),
+	)
+	cell_w := font_size * ADVANCE_EM
+	cell_h := font_size * LINE_EM
+	return Layout {
+		cell_w = cell_w,
+		cell_h = cell_h,
+		font_size = font_size,
+		origin_x = MARGIN + (avail_w - cell_w * f32(grid.width)) / 2,
+		origin_y = MARGIN + (avail_h - cell_h * f32(grid.height)) / 2,
+	}
 }
 
 // Solid frame just inside the window edges signalling play state:
 // green while playing, nothing while paused.
-draw_border :: proc(app: ^App) {
+draw_border :: proc(app: ^App, grid: orca.Grid, layout: Layout) {
 	// Green frame while playing, or while the Enter audition tone sounds.
 	if !app.playing && !app.audition {
 		return
 	}
 	rect := k2.Rect {
-		BORDER_INSET,
-		BORDER_INSET,
-		f32(k2.get_screen_width()) - BORDER_INSET * 2,
-		f32(k2.get_screen_height()) - BORDER_INSET * 2,
+		layout.origin_x - BORDER_INSET,
+		layout.origin_y - BORDER_INSET,
+		layout.cell_w * f32(grid.width) + BORDER_INSET * 2,
+		layout.cell_h * f32(grid.height) + BORDER_INSET * 2,
 	}
 	k2.draw_rect_outline(rect, BORDER_THICKNESS, PLAY_BORDER)
 }
@@ -1561,8 +1624,8 @@ draw_operator_overview :: proc(app: ^App, font: k2.Font) {
 // renderer uses), or (-1, -1) when the pointer is outside the grid.
 hover_cell :: proc(grid: orca.Grid, layout: Layout) -> (cx, cy: int) {
 	m := k2.get_mouse_position()
-	fx := (m.x - MARGIN) / layout.cell_w
-	fy := (m.y - MARGIN) / layout.cell_h
+	fx := (m.x - layout.origin_x) / layout.cell_w
+	fy := (m.y - layout.origin_y) / layout.cell_h
 	if fx < 0 || fy < 0 {
 		return -1, -1
 	}
@@ -1584,6 +1647,7 @@ hover_cell :: proc(grid: orca.Grid, layout: Layout) -> (cx, cy: int) {
 // mouse-moved events to the key window only, so an unfocused window reports a
 // stale pointer.
 draw_hover_readout :: proc(
+	hud: f32,
 	grid: orca.Grid,
 	font: k2.Font,
 	layout: Layout,
@@ -1606,11 +1670,11 @@ draw_hover_readout :: proc(
 	if name == "" {
 		return
 	}
-	size := layout.font_size * STATUS_SCALE
+	size := hud
 	w := k2.measure_text(name, size, font).x
 	x := f32(k2.get_screen_width()) - MARGIN - w
-	// One line above the status bar (which sits at height - size - MARGIN).
-	y := f32(k2.get_screen_height()) - size * 2 - MARGIN
+	// Row 2, sharing it with the peer legend, which is left-aligned.
+	y := status_row_y(hud, 2)
 	k2.draw_text(name, {x, y}, size, SECONDARY, font)
 }
 
@@ -1621,8 +1685,8 @@ draw_selection :: proc(app: ^App, layout: Layout) {
 	}
 	x0, y0, x1, y1 := selection_rect(app)
 	rect := k2.Rect {
-		MARGIN + f32(x0) * layout.cell_w,
-		MARGIN + f32(y0) * layout.cell_h,
+		layout.origin_x + f32(x0) * layout.cell_w,
+		layout.origin_y + f32(y0) * layout.cell_h,
 		f32(x1 - x0 + 1) * layout.cell_w,
 		f32(y1 - y0 + 1) * layout.cell_h,
 	}
@@ -1644,7 +1708,10 @@ draw_grid :: proc(
 		for x in 0 ..< grid.width {
 			glyph := orca.grid_get(grid, x, y)
 			mark := marks[y * grid.width + x]
-			pos := k2.Vec2{MARGIN + f32(x) * layout.cell_w, MARGIN + f32(y) * layout.cell_h}
+			pos := k2.Vec2 {
+				layout.origin_x + f32(x) * layout.cell_w,
+				layout.origin_y + f32(y) * layout.cell_h,
+			}
 			color := base
 			if glyph == orca.EMPTY_GLYPH {
 				// Ruler overlay: '+' every 8x8 intersection, dim '.' elsewhere.
@@ -1714,8 +1781,8 @@ draw_cursor :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		glyph = '@'
 	}
 	pos := k2.Vec2 {
-		MARGIN + f32(app.cursor_x) * layout.cell_w,
-		MARGIN + f32(app.cursor_y) * layout.cell_h,
+		layout.origin_x + f32(app.cursor_x) * layout.cell_w,
+		layout.origin_y + f32(app.cursor_y) * layout.cell_h,
 	}
 	rect := k2.Rect{pos.x, pos.y, layout.cell_w, layout.cell_h}
 	k2.draw_rect(rect, CURSOR_BG)
@@ -1723,7 +1790,7 @@ draw_cursor :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	k2.draw_text(string(buf[:]), pos, layout.font_size, CURSOR_FG, font)
 }
 
-draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
+draw_status :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
 	text: string
 	if app.status_msg != "" {
 		text = app.status_msg
@@ -1766,9 +1833,8 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	}
 	// The status line is heads-up/debug info, so draw it smaller than the
 	// grid glyphs (60%) to keep it fitting within the window width.
-	size := layout.font_size * STATUS_SCALE
-	y := f32(k2.get_screen_height()) - size - MARGIN
-	k2.draw_text(text, {MARGIN, y}, size, STATUS, font)
+	size := hud
+	k2.draw_text(text, {MARGIN, status_row_y(hud, 1)}, size, STATUS, font)
 }
 
 // Remotes sorted by view_id for jam LWW seq-0 fallback (stable join order).
@@ -1819,7 +1885,10 @@ draw_jam_grid :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		for x in 0 ..< grid.width {
 			glyph, jam_tint := jam_cell_at(app, x, y, order)
 			mark := marks[y * grid.width + x]
-			pos := k2.Vec2{MARGIN + f32(x) * layout.cell_w, MARGIN + f32(y) * layout.cell_h}
+			pos := k2.Vec2 {
+				layout.origin_x + f32(x) * layout.cell_w,
+				layout.origin_y + f32(y) * layout.cell_h,
+			}
 			base := FG if jam_tint == p2p.JAM_LOCAL else remote_tint(jam_tint)
 			color := base
 			if glyph == orca.EMPTY_GLYPH {
@@ -1879,12 +1948,12 @@ draw_jam_grid :: proc(app: ^App, font: k2.Font, layout: Layout) {
 // Room status: room name, peer count, truncated hash, and the copy-id hint,
 // on its own HUD line above the legend/status lines. Shown only while a p2p
 // room is open.
-draw_room_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
+draw_room_status :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
 	if !app.p2p_active {
 		return
 	}
-	size := layout.font_size * STATUS_SCALE
-	y := f32(k2.get_screen_height()) - size * 3 - MARGIN - size * 0.8
+	size := hud
+	y := status_row_y(hud, 3)
 	x := f32(MARGIN)
 
 	room_name := app.p2p.room_name
@@ -1935,7 +2004,7 @@ p2p_hash_display :: proc(hash: string) -> string {
 // mapping each remote player's tint to their name. Drawn only in host mode and
 // only when at least one remote player is connected (otherwise the status
 // line's "N remote" already says everything).
-draw_legend :: proc(app: ^App, font: k2.Font, layout: Layout) {
+draw_legend :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
 	if !app.p2p_active || len(app.p2p.sims) == 0 {
 		return
 	}
@@ -1945,9 +2014,9 @@ draw_legend :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	}
 	slice.sort_by(order[:], proc(a, b: ^p2p.Peer_Sim) -> bool {return a.view_id < b.view_id})
 
-	size := layout.font_size * STATUS_SCALE
-	// One line above the status line (status sits at height - size - MARGIN).
-	y := f32(k2.get_screen_height()) - size * 2 - MARGIN - size * 0.4
+	size := hud
+	// Row 2, sharing it with the hover readout, which is right-aligned.
+	y := status_row_y(hud, 2)
 	x := f32(MARGIN)
 	dot := size * 0.6
 	for sim in order {
