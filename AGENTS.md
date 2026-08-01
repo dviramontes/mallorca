@@ -63,10 +63,37 @@ just test               # run core package tests (odin test src/core)
 just run [file]         # debug build & run, optionally loading an .orca file
 just create-room [file] # run and open a new p2p room
 just join-room <hash> [file]  # run and join an existing p2p room
-just build              # debug binary -> bin/mallorca
+just build              # debug binary -> bin/mallorca, wrapped in bin/Mallorca.app
 just release            # optimized binary (-o:speed) -> bin/mallorca
+just bundle             # optimized, ad-hoc signed bin/Mallorca.app
 just clean               # remove bin/
 ```
+
+The three launch recipes run `bin/Mallorca.app/Contents/MacOS/mallorca`, not the
+bare binary: macOS reads the Dock/Finder icon and the app name from the bundle's
+`Info.plist`, so an unbundled executable gets a placeholder icon and the name
+"mallorca". Exec'ing the binary inside the bundle rather than `open`ing the app
+keeps stdout, argv and the working directory, so relative `.orca` paths still
+resolve. `build` and `bundle` write the same `bin/Mallorca.app` — whichever ran
+last decides whether the bundled binary is the debug or the optimized one.
+
+Two macOS details the recipes handle, both easy to reintroduce:
+
+- Every build passes `-minimum-os-version:11.0.0` (`min_os` in the `Justfile`).
+  Odin 2026-07a otherwise stamps `LC_BUILD_VERSION minos 28.0` — one past the
+  installed SDK, and past the running system — and LaunchServices then refuses
+  the bundle with error `-10825`, drawing a prohibitory badge over the icon.
+  The flag makes `ld` warn that some `libfofoca_ffi.a` objects (blake3's and
+  sha2's `cc`-compiled asm) were built for 27.0 — expected, and not worth
+  pinning `MACOSX_DEPLOYMENT_TARGET` for: those crates ignore it.
+- `just bundle` re-signs with `codesign --force --sign -`. The linker's ad-hoc
+  signature is made before the bundle exists, so it leaves `Info.plist=not bound`
+  and `Sealed Resources=none`.
+
+`src/icon.odin` additionally embeds `assets/mallorca.icns` and sets it as the
+Dock tile at startup, which is what a bare `bin/mallorca` (outside the bundle)
+relies on. Regenerate the icon from `assets/icon/island.svg` with
+`swift assets/icon/render_icon.swift <out.iconset>` + `iconutil -c icns`.
 
 Run a single core test by name:
 

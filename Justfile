@@ -35,6 +35,12 @@ setup:
 # backend also accrues memory in AudioToolbox internals while idle
 defines := "-define:KARL2D_AUDIO_BACKEND=nil"
 
+# odin 2026-07a stamps LC_BUILD_VERSION minos 28.0 (one past the installed SDK)
+# instead of the 11.0.0 its own -help documents as the default. LaunchServices
+# then rejects the .app as too new for this Mac — error -10825, a prohibitory
+# badge over the icon — so pin it to the LSMinimumSystemVersion in Info.plist.
+min_os := "-minimum-os-version:11.0.0"
+
 # build the fofoca FFI staticlib and copy it to the path src links against.
 # Every build recipe depends on this one but none depend on `setup`, so clone
 # on demand rather than failing with a bare "no such manifest".
@@ -54,38 +60,53 @@ check: fofoca
 fmt:
     for f in src/*.odin src/core/*.odin src/p2p/*.odin; do [ -f "$f" ] && odinfmt -w "$f"; done
 
+# the launch recipes run the executable *inside* the bundle rather than the bare
+# bin/mallorca: CFBundle resolves the app from the executable path, so AppKit
+# picks up the island icon and the "Mallorca" name from Info.plist. Exec'ing it
+# directly (not `open`) keeps stdout, argv and cwd, so relative .orca paths work.
+app_exe := "bin/Mallorca.app/Contents/MacOS/mallorca"
+
 # debug build & run; pass an .orca file to load, and extra flags (see docs/p2p-protocol.md)
-run file="" *flags="": fofoca
-    mkdir -p bin
-    odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" {{flags}}
+run file="" *flags="": build
+    {{app_exe}} "{{file}}" {{flags}}
 
 # create a p2p room and open `file` (optional), optionally naming the room
-create-room file="" room_name="": fofoca
-    mkdir -p bin
-    odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" --create-room {{ if room_name != "" { "--room-name=" + room_name } else { "" } }}
+create-room file="" room_name="": build
+    {{app_exe}} "{{file}}" --create-room {{ if room_name != "" { "--room-name=" + room_name } else { "" } }}
 
 # join a p2p room by its bare base58 hash (printed by create-room)
-join-room hash file="": fofoca
-    mkdir -p bin
-    odin run src -debug {{defines}} -out:bin/mallorca -- "{{file}}" --join-room={{hash}}
+join-room hash file="": build
+    {{app_exe}} "{{file}}" --join-room={{hash}}
 
-# debug build
-build: fofoca
+# debug build, wrapped in bin/Mallorca.app
+build: fofoca && app-bundle
     mkdir -p bin
-    odin build src -debug {{defines}} -out:bin/mallorca
+    odin build src -debug {{defines}} {{min_os}} -out:bin/mallorca
 
 # optimized build
 release: fofoca
     mkdir -p bin
-    odin build src -o:speed {{defines}} -out:bin/mallorca
+    odin build src -o:speed {{defines}} {{min_os}} -out:bin/mallorca
 
-# build an optimized .app bundle with the island icon (macOS Dock/Finder icon)
-bundle: fofoca
+# build an optimized, ad-hoc signed .app bundle with the island icon
+bundle: fofoca && app-bundle app-sign
     mkdir -p bin
-    odin build src -o:speed {{defines}} -out:bin/mallorca
+    odin build src -o:speed {{defines}} {{min_os}} -out:bin/mallorca
+
+# bind Info.plist and seal the resources. Without it the bundle carries only the
+# linker's ad-hoc signature, which predates the plist and the icon.
+[private]
+app-sign:
+    codesign --force --sign - bin/Mallorca.app
+
+# wrap whatever bin/mallorca currently is (debug or optimized) in bin/Mallorca.app.
+# A post-dependency of every recipe that builds a runnable binary; the .app is the
+# only thing macOS reads an icon from, so the dev loop needs it too.
+[private]
+app-bundle:
     rm -rf bin/Mallorca.app
     mkdir -p bin/Mallorca.app/Contents/MacOS bin/Mallorca.app/Contents/Resources
-    cp bin/mallorca bin/Mallorca.app/Contents/MacOS/mallorca
+    cp bin/mallorca {{app_exe}}
     cp assets/mallorca.icns bin/Mallorca.app/Contents/Resources/mallorca.icns
     printf '%s\n' \
       '<?xml version="1.0" encoding="UTF-8"?>' \
@@ -112,7 +133,7 @@ bundle: fofoca
 # accepts --profile-run=<seconds> and --profile-no-play
 profile: fofoca
     mkdir -p bin
-    odin build src -o:speed {{defines}} -define:MALLORCA_PROFILE=true -out:bin/mallorca-prof
+    odin build src -o:speed {{defines}} {{min_os}} -define:MALLORCA_PROFILE=true -out:bin/mallorca-prof
 
 # measure what the mesh FFI costs: size, CPU, RAM (see docs/ffi-cost.md).
 # `just measure size` skips the runtime matrix, which needs an idle machine.

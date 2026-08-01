@@ -390,6 +390,9 @@ main :: proc() {
 		int(math.ceil(f32(2 * INITIAL_FONT_SIZE * STATUS_SCALE * LINE_EM + MARGIN)))
 	k2.init(window_w, window_h, "mallorca", {window_mode = .Windowed_Resizable})
 	defer k2.shutdown()
+	// karl2d has an NSApplication by now; give its Dock tile the island icon
+	// for the runs that are not launched from bin/Mallorca.app.
+	set_dock_icon()
 	when MALLORCA_PROFILE {
 		prof_init_us = prof_us_since(prof_boot)
 		// Start the clock and the run window only once the window is up, so
