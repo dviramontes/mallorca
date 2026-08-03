@@ -1,0 +1,6 @@
+[tools]
+odin = "latest"
+rust = "latest"
+just = "latest"
+erlang = "latest"
+elixir = "latest"
