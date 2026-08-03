@@ -517,6 +517,7 @@ main :: proc() {
 						app.bpm,
 						app.playing,
 						BPM_MIN,
+						BPM_MAX,
 					),
 				)
 				when MALLORCA_PROFILE {
@@ -1445,10 +1446,9 @@ Layout :: struct {
 compute_layout :: proc(grid: orca.Grid, band: f32, zoom: f32) -> Layout {
 	avail_w := f32(k2.get_screen_width()) - MARGIN * 2
 	avail_h := f32(k2.get_screen_height()) - band - MARGIN * 2
-	font_size := min(
-		avail_w / (f32(grid.width) * ADVANCE_EM),
-		avail_h / (f32(grid.height) * LINE_EM),
-	) * zoom
+	font_size :=
+		min(avail_w / (f32(grid.width) * ADVANCE_EM), avail_h / (f32(grid.height) * LINE_EM)) *
+		zoom
 	cell_w := font_size * ADVANCE_EM
 	cell_h := font_size * LINE_EM
 	return Layout {
@@ -1903,7 +1903,9 @@ draw_cursor :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	}
 	glyph := orca.grid_get(app.grid, app.cursor_x, app.cursor_y)
 	if app.p2p_active && len(app.p2p.sims) > 0 {
-		glyph, _ = jam_cell_at(app, app.cursor_x, app.cursor_y, jam_sims_ordered(app))
+		order := jam_sims_ordered(app)
+		remotes := make([]p2p.Jam_Remote_Cell, len(order), context.temp_allocator)
+		glyph, _ = jam_cell_at(app, app.cursor_x, app.cursor_y, order, remotes)
 	}
 	if glyph == orca.EMPTY_GLYPH {
 		glyph = '@'
@@ -1977,13 +1979,22 @@ jam_sims_ordered :: proc(app: ^App) -> []^p2p.Peer_Sim {
 }
 
 // Visible glyph + tint for one jam cell (LWW user ink, else legacy overlay).
-jam_cell_at :: proc(app: ^App, x, y: int, order: []^p2p.Peer_Sim) -> (glyph: u8, tint: int) {
+// `remotes` is a caller-owned scratch buffer, refilled each call and passed in
+// so a full-grid redraw doesn't allocate one slice per cell per frame.
+jam_cell_at :: proc(
+	app: ^App,
+	x, y: int,
+	order: []^p2p.Peer_Sim,
+	remotes: []p2p.Jam_Remote_Cell,
+) -> (
+	glyph: u8,
+	tint: int,
+) {
 	local_glyph := orca.grid_get(app.grid, x, y)
 	local_seq: u64 = 0
 	if len(app.edit_seqs) == len(app.grid.cells) {
 		local_seq = app.edit_seqs[y * app.grid.width + x]
 	}
-	remotes := make([]p2p.Jam_Remote_Cell, len(order), context.temp_allocator)
 	for sim, i in order {
 		rg: u8 = orca.EMPTY_GLYPH
 		rs: u64 = 0
@@ -1999,19 +2010,20 @@ jam_cell_at :: proc(app: ^App, x, y: int, order: []^p2p.Peer_Sim) -> (glyph: u8,
 			tint  = sim.tint,
 		}
 	}
-	return p2p.jam_pick(local_glyph, local_seq, remotes)
+	return p2p.jam_pick(local_glyph, local_seq, remotes[:len(order)]) // filled prefix only
 }
 
 // Jam canvas: draw the host grid with last-write-wins compose against remotes.
 // Marks always come from the local sim; glyph/color follow p2p.jam_pick.
 draw_jam_grid :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	order := jam_sims_ordered(app)
+	remotes := make([]p2p.Jam_Remote_Cell, len(order), context.temp_allocator) // one scratch, reused per cell
 	grid := app.grid
 	marks := app.marks
 	buf: [1]u8
 	for y in 0 ..< grid.height {
 		for x in 0 ..< grid.width {
-			glyph, jam_tint := jam_cell_at(app, x, y, order)
+			glyph, jam_tint := jam_cell_at(app, x, y, order, remotes)
 			mark := marks[y * grid.width + x]
 			pos := k2.Vec2 {
 				layout.origin_x + f32(x) * layout.cell_w,
@@ -2104,8 +2116,11 @@ draw_room_status :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
 // `App` — it returns outcomes and this is where they land, so the mesh layer
 // never reaches into the host's status line or transport clock.
 apply_roster :: proc(app: ^App, res: p2p.Roster_Result) {
+	// res.statuses live in roster_tick's allocator (temp by default), but
+	// set_status takes heap ownership and frees on expiry — clone so it never
+	// frees recycled temp memory.
 	for line in res.statuses {
-		set_status(app, line)
+		set_status(app, strings.clone(line))
 	}
 	if bpm, ok := res.bpm.?; ok {
 		app.bpm = bpm
