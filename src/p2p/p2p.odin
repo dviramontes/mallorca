@@ -20,13 +20,14 @@ Status :: enum {
 // "snapshot streaming, not edit replay" decision). Same fields as the old
 // Host_Sim minus its per-tick events buffer.
 Peer_Sim :: struct {
-	grid:    orca.Grid,
-	marks:   []orca.Mark,
-	seqs:    []u64, // per-cell user-edit generation; 0 = never user-touched
-	tick:    uint,
-	name:    string,
-	tint:    int, // REMOTE_TINTS index from hash(name); for draw color only
-	view_id: int, // unique join-order id for ` view cycling (not color)
+	grid:      orca.Grid,
+	marks:     []orca.Mark,
+	seqs:      []u64, // per-cell user-edit generation; 0 = never user-touched
+	tick:      uint,
+	name:      string,
+	tint:      int, // REMOTE_TINTS index from hash(name); for draw color only
+	view_id:   int, // unique join-order id for ` view cycling (not color)
+	announced: bool, // greeted once (backfill + join notice); apply & roster share it
 }
 
 // One sparse ink entry on the wire: cell coords + that peer's edit seq.
@@ -279,8 +280,9 @@ ink_from_seqs :: proc(
 }
 
 // Jam LWW: max user-edit seq wins (including clear / '.'). When every seq is
-// 0, local non-empty wins, else the first non-empty remote in tint order.
-// `remotes` must be sorted by ascending tint for the seq-0 fallback.
+// 0, local non-empty wins, else the first non-empty remote in `remotes` order.
+// The caller passes them in a stable order (ascending view_id, i.e. join order)
+// so the seq-0 fallback picks a deterministic, flicker-free winner.
 jam_pick :: proc(
 	local_glyph: u8,
 	local_seq: u64,
@@ -476,14 +478,18 @@ roster_tick :: proc(
 	bpm: int,
 	playing: bool,
 	bpm_min: int,
+	bpm_max: int,
 	allocator := context.temp_allocator,
 ) -> (
 	res: Roster_Result,
 ) {
+	// Assign res.statuses at each return, not via `defer`: a deferred
+	// assignment to a named return is dropped (the return copy is taken
+	// before defers run), which silently ate every status line before.
 	out := make([dynamic]string, allocator)
-	defer res.statuses = out[:]
 
 	if st.worker == nil {
+		res.statuses = out[:]
 		return
 	}
 
@@ -497,6 +503,7 @@ roster_tick :: proc(
 
 	snap, fresh := worker_take_roster(st.worker, st.roster_gen)
 	if !fresh {
+		res.statuses = out[:]
 		return
 	}
 	defer delete(snap.peers_json)
@@ -520,9 +527,17 @@ roster_tick :: proc(
 				continue
 			}
 			seen[nick] = true
-			if nick not_in st.sims {
-				sim := new_sim(st, nick, grid.width, grid.height)
+			// apply() may have created the sim from a snapshot that beat this
+			// roster read; announced greets exactly once either way. Backfill
+			// matters because the mesh keeps no history — a paused host would
+			// otherwise never send the newcomer its grid.
+			sim, exists := st.sims[nick]
+			if !exists {
+				sim = new_sim(st, nick, grid.width, grid.height)
 				st.sims[strings.clone(nick)] = sim
+			}
+			if !sim.announced {
+				sim.announced = true
 				send_own_to(st, nick, grid, tick, edit_seqs)
 				append(&out, fmt.aprintf("%s joined", nick, allocator = allocator))
 			}
@@ -537,8 +552,17 @@ roster_tick :: proc(
 		for nick in gone {
 			sim := st.sims[nick]
 			free_sim(sim)
-			delete_key(&st.sims, nick)
+			// Free what the maps cloned, or every departure leaks a key and the
+			// rx buffer. `nick` aliases the sims key, so free dk last (after the
+			// last read of nick); rk is feed's separate clone of the rx key.
+			if rk, rbuf := delete_key(&st.rx, nick); rbuf != nil {
+				delete(rbuf^)
+				free(rbuf)
+				delete(rk)
+			}
+			dk, _ := delete_key(&st.sims, nick)
 			append(&out, fmt.aprintf("%s left", nick, allocator = allocator))
+			delete(dk)
 		}
 
 		if collision && !st.warned_collision {
@@ -583,7 +607,10 @@ roster_tick :: proc(
 			   allocator = context.temp_allocator,
 		   ) ==
 		   nil {
-			if remote.bpm >= bpm_min && remote.bpm != bpm && remote.bpm != st.last_synced_bpm {
+			// Ignore an out-of-range shared bpm: this side never re-clamps what
+			// it adopts, so a bad peer could otherwise push everyone past BPM_MAX.
+			in_range := remote.bpm >= bpm_min && remote.bpm <= bpm_max
+			if in_range && remote.bpm != bpm && remote.bpm != st.last_synced_bpm {
 				st.last_synced_bpm = remote.bpm
 				res.bpm = remote.bpm
 				append(&out, fmt.aprintf("bpm synced to %d", remote.bpm, allocator = allocator))
@@ -603,6 +630,7 @@ roster_tick :: proc(
 			}
 		}
 	}
+	res.statuses = out[:]
 	return
 }
 
@@ -653,13 +681,16 @@ shutdown :: proc(st: ^State) {
 	}
 	delete(st.rx_batch)
 
-	for _, sim in st.sims {
+	// Free the cloned keys with their values; the maps are torn down next.
+	for nick, sim in st.sims {
 		free_sim(sim)
+		delete(nick)
 	}
 	delete(st.sims)
-	for _, buf in st.rx {
+	for nick, buf in st.rx {
 		delete(buf^)
 		free(buf)
+		delete(nick)
 	}
 	delete(st.rx)
 	delete(st.room_name)
