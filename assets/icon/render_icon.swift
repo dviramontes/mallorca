@@ -7,6 +7,11 @@
 //
 // Produces icon_16x16.png ... icon_512x512@2x.png at the pixel sizes Apple's
 // iconutil expects, then `iconutil -c icns` turns the folder into a .icns.
+// `just icon` runs both steps.
+//
+// island.svg describes the scene alone. The margin around it belongs to macOS,
+// not to the artwork: an app icon is a rounded square covering ~80.5% of a
+// transparent canvas, with a shadow below it, and makeImage() adds that.
 
 import Foundation
 import CoreGraphics
@@ -36,10 +41,11 @@ func drawIcon(_ ctx: CGContext) {
         ctx.setFillColor(color); ctx.fillEllipse(in: r)
     }
 
-    // background rounded square (deep Orca night)
-    fill(roundedRect(0, 0, S, S, 224), hex(0x1a1a1a))
-    // sky band
-    fill(roundedRect(0, 0, S, 620, 224), hex(0x22242e))
+    // background (deep Orca night) and sky band. Both run to the scene edge:
+    // makeImage() clips to the icon's squircle, so painting our own corners
+    // here would only fight it and leave gaps where the two disagree.
+    fill(roundedRect(0, 0, S, S, 0), hex(0x1a1a1a))
+    fill(roundedRect(0, 0, S, 620, 0), hex(0x22242e))
 
     // sun / moon
     ellipse(760, 250, 90, 90, hex(0xe8d9a8))
@@ -102,20 +108,76 @@ func drawIcon(_ ctx: CGContext) {
     fill(roundedRect(360, 900, 70, 12, 6), glint)
 }
 
+// Margin between the canvas edge and the icon body, per canvas size, measured
+// off /System/Applications/Utilities/Terminal.app's icns: 824 of 1024, and a
+// pixel or two of slack at the sizes too small to spare one.
+let margins: [Int: CGFloat] = [16: 1, 32: 3, 64: 6, 128: 12, 256: 25, 512: 50, 1024: 100]
+
+// The corner Apple actually draws is not a circular arc: it is a continuous
+// curve that starts bending well before the arc would. Tracing the alpha edge
+// of Terminal's, Notes' and Finder's icns (identical to the pixel, all three)
+// and fitting a superellipse corner |dx/R|^n + |dy/R|^n = 1 lands on R = 0.3013
+// of the body and n = 2.85, within 1.1px rms across the whole edge. A circular
+// radius of 185.4, which is what the grid documents, is 3x worse and reads
+// visibly tighter at the corners.
+let cornerBoxRatio: CGFloat = 0.3013
+let cornerExponent: CGFloat = 2.85
+
+func squirclePath(in rect: CGRect) -> CGPath {
+    let R = min(rect.width, rect.height) * cornerBoxRatio
+    let steps = 96
+    // one corner quadrant, from the axis to the diagonal, as (u, v) in 0...1
+    let quadrant: [(CGFloat, CGFloat)] = (0...steps).map { i in
+        let t = CGFloat(i) / CGFloat(steps) * .pi / 2
+        return (pow(cos(t), 2 / cornerExponent), pow(sin(t), 2 / cornerExponent))
+    }
+    // corner centres and the (u, v) -> offset mapping that walks each corner
+    // counter-clockwise into the next edge
+    let corners: [(CGPoint, (CGFloat, CGFloat) -> CGPoint)] = [
+        (CGPoint(x: rect.maxX - R, y: rect.maxY - R), { CGPoint(x:  $0 * R, y:  $1 * R) }),
+        (CGPoint(x: rect.minX + R, y: rect.maxY - R), { CGPoint(x: -$1 * R, y:  $0 * R) }),
+        (CGPoint(x: rect.minX + R, y: rect.minY + R), { CGPoint(x: -$0 * R, y: -$1 * R) }),
+        (CGPoint(x: rect.maxX - R, y: rect.minY + R), { CGPoint(x:  $1 * R, y: -$0 * R) }),
+    ]
+    let points = corners.flatMap { centre, offset in
+        quadrant.map { u, v in
+            CGPoint(x: centre.x + offset(u, v).x, y: centre.y + offset(u, v).y)
+        }
+    }
+    let path = CGMutablePath()
+    path.move(to: points[0])
+    path.addLines(between: Array(points.dropFirst()))
+    path.closeSubpath()
+    return path
+}
+
 func makeImage(size: Int) -> CGImage {
     let cs = CGColorSpaceCreateDeviceRGB()
     let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
                         bytesPerRow: 0, space: cs,
                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.interpolationQuality = .high
+
+    let canvas = CGFloat(size)
+    let m = margins[size] ?? (canvas * 100.0 / 1024.0).rounded()
+    let body = CGRect(x: m, y: m, width: canvas - 2 * m, height: canvas - 2 * m)
+    let shape = squirclePath(in: body)
+
+    // Fill the body opaquely to cast the shadow, then draw the scene over it.
+    // Below 256px Apple's icons carry no shadow — there is no room for one.
+    if size >= 256 {
+        ctx.setShadow(offset: CGSize(width: 0, height: -canvas * 0.008),
+                      blur: canvas * 0.010,
+                      color: CGColor(gray: 0, alpha: 0.32))
+        ctx.addPath(shape); ctx.setFillColor(hex(0x1a1a1a)); ctx.fillPath()
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+    }
+
     // clip everything to the rounded square so sea corners stay rounded
-    let scale = CGFloat(size) / 1024.0
-    // flip to SVG-style y-down coords, then scale to target size
-    ctx.translateBy(x: 0, y: CGFloat(size))
-    ctx.scaleBy(x: scale, y: -scale)
-    let clip = CGPath(roundedRect: CGRect(x: 0, y: 0, width: 1024, height: 1024),
-                      cornerWidth: 224, cornerHeight: 224, transform: nil)
-    ctx.addPath(clip); ctx.clip()
+    ctx.addPath(shape); ctx.clip()
+    // flip to SVG-style y-down coords, then scale the 1024 scene into the body
+    ctx.translateBy(x: body.minX, y: body.maxY)
+    ctx.scaleBy(x: body.width / 1024.0, y: -body.height / 1024.0)
     drawIcon(ctx)
     return ctx.makeImage()!
 }

@@ -1,5 +1,14 @@
 # M6 network protocol
 
+**Live.** This is the wire protocol for the relay transport: the Phoenix server
+in `server/` and the host↔server TCP link that `--net-host` dials. It runs
+alongside, not instead of, the serverless mesh in
+[p2p-protocol.md](p2p-protocol.md); a session uses one or the other, never
+both. The `snapshot` grid encoding in §2 (row-major string, `.` empty, no
+separators) is shared by both protocols.
+
+---
+
 Wire protocol for mallorca's network mode (PLAN.md → M6). This is the contract
 both sides implement; write it before coding either.
 

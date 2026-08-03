@@ -99,8 +99,8 @@ just host           # opens the editor window and prints the demo URL
 The host window edits its own grid and shows a small square that is **green
 when connected** to the server (red when not). It also simulates and sounds
 every remote player, so keep it running and press `Space` to play. Press
-`` ` `` to cycle the window over each remote player's grid (read-only, shown in
-that player's color; `` Shift+` `` steps back).
+`` ` `` to cycle forward through your grid and each remote player's grid
+(read-only, shown in that player's color); press `~` to cycle backward.
 
 **3. Join from a browser**
 

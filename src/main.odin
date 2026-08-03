@@ -4,14 +4,17 @@
 package main
 
 
-import k2 "../karl2d"// macOS-only for now; gate with #+build when porting
+import k2 "../karl2d" // macOS-only for now; gate with #+build when porting
 import orca "core"
 import "core:fmt"
 import "core:math"
+import "core:math/rand"
 import "core:os"
 import "core:slice"
+import "core:strconv"
 import "core:strings"
 import NS "core:sys/darwin/Foundation"
+import "p2p"
 
 FONT_DATA :: #load("../assets/JetBrainsMono-Regular.ttf")
 // Italic face, used only for the M10 hover readout (see draw_hover_readout).
@@ -50,6 +53,37 @@ BLINK_INTERVAL :: 0.53
 // heads-up/debug text, secondary to the grid.
 STATUS_SCALE :: 0.6
 
+// The HUD glyph size, derived from the *width* fit alone.
+//
+// It deliberately does not read the final `Layout.font_size`: the band's height
+// feeds `compute_layout`'s height fit, so a HUD size taken from the finished
+// layout would be circular. The width fit is what the HUD used before the band
+// existed, so this keeps its old size while letting the grid shrink under it
+// when height-constrained.
+status_font :: proc(grid: orca.Grid) -> f32 {
+	width_fit := (f32(k2.get_screen_width()) - MARGIN * 2) / f32(grid.width) / ADVANCE_EM
+	return width_fit * STATUS_SCALE
+}
+
+// HUD rows, counting 1 from the bottom: 1 is the status line (always present),
+// 2 is the peer legend (left) and hover readout (right), 3 is the room line.
+//
+// Row 2 stays reserved even when empty. The hover readout comes and goes with
+// the pointer, so a band that tracked it would rescale the whole grid every
+// time the cursor crossed an operator.
+status_rows :: proc(app: ^App) -> int {
+	return 3 if app.p2p_active else 2
+}
+
+status_band :: proc(app: ^App, hud: f32) -> f32 {
+	return f32(status_rows(app)) * hud * LINE_EM + MARGIN
+}
+
+// Baseline y of HUD row `row`, counting 1 from the bottom.
+status_row_y :: proc(hud: f32, row: int) -> f32 {
+	return f32(k2.get_screen_height()) - f32(row) * hud * LINE_EM - MARGIN
+}
+
 // Orca-ish theme.
 BG :: k2.Color{0x17, 0x17, 0x17, 0xff}
 FG :: k2.Color{0xf0, 0xf0, 0xf0, 0xff}
@@ -77,9 +111,9 @@ CONN_BAD :: k2.Color{0xc0, 0x3a, 0x3a, 0xff} // disconnected: red
 CONN_WAIT :: k2.Color{0xc8, 0x9b, 0x3c, 0xff} // connecting: amber
 SELECT :: k2.Color{0x2c, 0x3e, 0x63, 0xff} // muted blue behind selected cells
 
-// Remote-view glyph palette (M8): when the host window shows a remote player's
-// grid, its input renders in one of these so it reads as "not the host's white,
-// and not that other player." Marks (input/output/etc.) still override per cell.
+// Peer glyph palette: index chosen by hashing the peer's nickname
+// (`p2p.tint_from_name`). On the author's own jam view their ink stays white
+// (`FG`); peer-won cells use that peer's palette color. Marks still override.
 REMOTE_TINTS :: [?]k2.Color {
 	{0xe6, 0x9a, 0x4c, 0xff}, // orange
 	{0xa7, 0x8b, 0xde, 0xff}, // violet
@@ -88,6 +122,11 @@ REMOTE_TINTS :: [?]k2.Color {
 	{0xd9, 0xc0, 0x4a, 0xff}, // gold
 	{0xd6, 0x6b, 0x5e, 0xff}, // coral
 }
+
+// The palette length is the modulus p2p.tint_from_name hashes into, so a peer's
+// color is only stable if the two agree. Catch drift at compile time rather
+// than silently wrapping a stray tint index.
+#assert(len(REMOTE_TINTS) == p2p.TINT_COUNT)
 
 DEFAULT_W :: 57
 DEFAULT_H :: 25
@@ -146,14 +185,27 @@ App :: struct {
 	midi:         Midi,
 	sus:          [dynamic]Sus_Note, // notes awaiting their note-off
 
-	// Network host (M6/M9): when hosting, the app also simulates every remote
-	// player's grid in the background; `host.status` drives the M9 indicator.
+	// P2P room (replaces the old Phoenix host/net link): peers stream full-grid
+	// snapshots directly over the mesh; `p2p.status` drives the connection
+	// indicator. See src/p2p/.
+	p2p:          p2p.State,
+	p2p_active:   bool,
+	// The Phoenix relay transport (net.odin). Mutually exclusive with `p2p`
+	// above: `--net-host` and `--create-room`/`--join-room` are rejected
+	// together, so only one of these is ever live.
 	host:         Host_State,
 	host_active:  bool,
 
-	// Remote view (M8): which grid the window shows. HOST_VIEW is the host's
-	// own (editable) grid; any other value is the remote player carrying that
-	// tint, shown read-only. Cycled with the '`' key.
+	// Per-cell user-edit generation for jam LWW (parallel to grid.cells).
+	// `edit_seq` is a monotonic counter; stamped cells carry the value at
+	// the time of the edit. 0 means never user-touched on this peer.
+	edit_seqs:    []u64,
+	edit_seq:     u64,
+
+	// Remote view: which grid the window shows. HOST_VIEW is our own
+	// (editable) grid; any other value is that peer's view_id (join order),
+	// shown read-only. Cycled with the '`' key. Draw color is hash(name),
+	// not view_id.
 	view_tint:    int,
 }
 
@@ -183,71 +235,139 @@ frame_seconds :: proc(bpm: int) -> f32 {
 	return 60.0 / f32(bpm) / 4.0
 }
 
+// Default p2p nickname when --nick isn't given: $USER-<4 lowercase hex>.
+@(private = "file")
+default_nick :: proc() -> string {
+	user := os.get_env("USER", context.temp_allocator)
+	if user == "" {
+		user = "player"
+	}
+	hex := "0123456789abcdef"
+	suffix: [4]u8
+	for i in 0 ..< 4 {
+		suffix[i] = hex[rand.int_max(16)]
+	}
+	return fmt.tprintf("%s-%s", user, string(suffix[:]))
+}
+
 main :: proc() {
+	when MALLORCA_PROFILE {
+		prof_boot = prof_now()
+	}
 	app: App
 
-	// Args: an optional .orca file path and an optional --debug flag, in any
-	// order. The first non-flag argument is the file.
+	// Args: an optional .orca file path, an optional --debug flag, and the p2p
+	// room flags below, in any order. The first non-flag argument is the file.
+	//
+	//   [--create-room | --join-room=<HASH>] [--room-name=<NAME>] [--nick=<NICK>]
+	//   [--private] [--no-mdns] [--no-dht] [--no-relay] [--max-peers=<N>]
 	debug := false
+	// Relay transport (net.odin, docs/m6-network-protocol.md).
 	net_spike := false
 	net_host := false
 	headless := false
 	room := ""
+	cli: p2p.Cli_Opts
+	has_create := false
+	has_join := false
+	room_flag_seen := false
+	nick_set := false
+
 	for arg in os.args[1:] {
-		if arg == "--debug" {
+		// Profiling flags exist only in a -define:MALLORCA_PROFILE=true build;
+		// consumed here so the switch below stays exactly as it ships.
+		when MALLORCA_PROFILE {
+			if prof_parse_arg(arg) {
+				continue
+			}
+		}
+		switch {
+		case arg == "--debug":
 			debug = true
-		} else if arg == "--net-spike" {
+		case arg == "--create-room":
+			has_create = true
+		case strings.has_prefix(arg, "--join-room="):
+			has_join = true
+			cli.join_hash = arg[len("--join-room="):]
+		case strings.has_prefix(arg, "--room-name="):
+			cli.room_name = arg[len("--room-name="):]
+			room_flag_seen = true
+		case strings.has_prefix(arg, "--nick="):
+			cli.nick = arg[len("--nick="):]
+			nick_set = true
+			room_flag_seen = true
+		case arg == "--private":
+			cli.private = true
+			room_flag_seen = true
+		case arg == "--no-mdns":
+			cli.no_mdns = true
+			room_flag_seen = true
+		case arg == "--no-dht":
+			cli.no_dht = true
+			room_flag_seen = true
+		case arg == "--no-relay":
+			cli.no_relay = true
+			room_flag_seen = true
+		case strings.has_prefix(arg, "--max-peers="):
+			n, ok := strconv.parse_int(arg[len("--max-peers="):])
+			if !ok || n < 0 {
+				fmt.eprintfln("mallorca: invalid --max-peers value %q", arg)
+				os.exit(1)
+			}
+			cli.max_peers = n
+			room_flag_seen = true
+		case arg == "--net-spike":
 			net_spike = true
-		} else if arg == "--net-host" {
+		case arg == "--net-host":
 			net_host = true
-		} else if arg == "--headless" {
+		case arg == "--headless":
 			headless = true
-		} else if strings.has_prefix(arg, "--room=") {
+		case strings.has_prefix(arg, "--room="):
 			room = arg[len("--room="):]
-		} else if arg != "" && app.file_name == "" {
+		case arg != "" && app.file_name == "":
 			app.file_name = arg
 		}
 	}
 
-	if net_spike {
-		run_net_spike()
-		return
+	if has_create && has_join {
+		fmt.eprintln("mallorca: --create-room and --join-room are mutually exclusive")
+		os.exit(1)
 	}
-	// Headless host: no window, just simulate + sound (docs/m6-network-protocol.md).
-	// Otherwise `--net-host` runs the windowed host (connected below).
-	if net_host && headless {
-		run_net_host(debug, room)
-		return
+	p2p_requested := has_create || has_join
+	// One transport per run. They keep separate rosters and separate meanings
+	// for `view_tint`, and nothing reconciles the two.
+	if net_host && p2p_requested {
+		fmt.eprintln("mallorca: --net-host and --create-room/--join-room are mutually exclusive")
+		os.exit(1)
 	}
 	if room != "" && !net_host {
 		fmt.eprintln("mallorca: --room has no effect without --net-host (running as local client)")
 	}
-
-	if app.file_name != "" {
-		data, read_err := os.read_entire_file_from_path(app.file_name, context.allocator)
-		if read_err != nil {
-			fmt.eprintfln("mallorca: cannot read %q: %v", app.file_name, read_err)
-			os.exit(1)
-		}
-		g, err := orca.parse_field(data)
-		delete(data)
-		if err != .None {
-			fmt.eprintfln("mallorca: failed to load %q: %v", app.file_name, err)
-			os.exit(1)
-		}
-		app.grid = g
-	} else {
-		app.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
+	// The headless spike and the headless host never open a window.
+	if net_spike {
+		run_net_spike()
+		return
 	}
-	app.debug = debug
-	app.marks = orca.make_marks(app.grid)
-	app.bpm = DEFAULT_BPM
-	app.zoom = 1
-	app.dirty = true // preview marks for the freshly loaded grid
-	app.midi = midi_init(debug)
+	if net_host && headless {
+		run_net_host(debug, room)
+		return
+	}
+	if !p2p_requested && room_flag_seen {
+		fmt.eprintln("mallorca: room flags require --create-room or --join-room")
+		os.exit(1)
+	}
+	if !nick_set {
+		cli.nick = default_nick()
+	}
 
-	// Windowed host: connect and simulate remote players in the background. The
-	// window renders/edits the host's own grid; the M9 square shows link status.
+	app.debug = debug
+
+	// p2p.open must succeed (or fail) before the window opens: on success the
+	// full room hash is on stdout for a peer to join with; on failure the app
+	// exits without ever creating a window.
+	// Windowed relay host: connect and simulate remote players in the
+	// background. The window renders/edits our own grid; the link indicator
+	// shows connection status.
 	if net_host {
 		st, ok := host_connect(room)
 		app.host = st
@@ -264,8 +384,55 @@ main :: proc() {
 		}
 	}
 
+	if p2p_requested {
+		when MALLORCA_PROFILE {
+			t_open := prof_now()
+		}
+		st, ok := p2p.start(cli)
+		when MALLORCA_PROFILE {
+			prof_open_us = prof_us_since(t_open)
+		}
+		if !ok {
+			fmt.eprintfln("mesh: %s", p2p.last_error_string())
+			os.exit(1)
+		}
+		app.p2p = st
+		app.p2p_active = true
+		app.view_tint = HOST_VIEW
+	}
+
+	if app.file_name != "" {
+		data, read_err := os.read_entire_file_from_path(app.file_name, context.allocator)
+		if read_err != nil {
+			fmt.eprintfln("mallorca: cannot read %q: %v", app.file_name, read_err)
+			if app.p2p_active {
+				p2p.shutdown(&app.p2p)
+			}
+			os.exit(1)
+		}
+		g, err := orca.parse_field(data)
+		delete(data)
+		if err != .None {
+			fmt.eprintfln("mallorca: failed to load %q: %v", app.file_name, err)
+			if app.p2p_active {
+				p2p.shutdown(&app.p2p)
+			}
+			os.exit(1)
+		}
+		app.grid = g
+	} else {
+		app.grid = orca.make_grid(DEFAULT_W, DEFAULT_H)
+	}
+	app.marks = orca.make_marks(app.grid)
+	app.edit_seqs = make([]u64, len(app.grid.cells))
+	app.bpm = DEFAULT_BPM
+	app.zoom = 1
+	app.dirty = true // preview marks for the freshly loaded grid
+	app.midi = midi_init(debug)
+
 	defer orca.destroy_grid(&app.grid)
 	defer delete(app.marks)
+	defer delete(app.edit_seqs)
 	defer delete(app.events)
 	defer delete(app.clip_cells)
 	defer delete(app.sus)
@@ -274,15 +441,33 @@ main :: proc() {
 	defer if app.host_active {
 		host_shutdown(&app.host)
 	}
+	defer if app.p2p_active {
+		p2p.shutdown(&app.p2p)
+	}
 	defer if app.status_msg != "" {
 		delete(app.status_msg)
 	}
 
 	window_w := MARGIN * 2 + app.grid.width * (INITIAL_FONT_SIZE * 3 / 5)
 	window_h :=
-		MARGIN * 2 + app.grid.height * (INITIAL_FONT_SIZE * 23 / 20) + INITIAL_FONT_SIZE + MARGIN
+		MARGIN * 2 +
+		app.grid.height * (INITIAL_FONT_SIZE * 23 / 20) +
+		int(math.ceil(f32(2 * INITIAL_FONT_SIZE * STATUS_SCALE * LINE_EM + MARGIN)))
 	k2.init(window_w, window_h, "mallorca", {window_mode = .Windowed_Resizable})
 	defer k2.shutdown()
+	// karl2d has an NSApplication by now; give its Dock tile the island icon
+	// for the runs that are not launched from bin/Mallorca.app.
+	set_dock_icon()
+	setup_menu_bar()
+	when MALLORCA_PROFILE {
+		prof_init_us = prof_us_since(prof_boot)
+		// Start the clock and the run window only once the window is up, so
+		// discovery and font baking don't count against the sampled interval.
+		prof_run_start = prof_now()
+		if prof_run_seconds > 0 && !prof_no_play && !app.playing {
+			toggle_play(&app)
+		}
+	}
 
 	// Dynamic font: bakes glyphs on demand, so it stays sharp at any
 	// window-derived size.
@@ -298,14 +483,48 @@ main :: proc() {
 		// nor a non-bundle executable sets up a per-frame pool, so without
 		// this, memory grows unboundedly while idle.
 		pool := NS.AutoreleasePool.alloc()->init()
+		when MALLORCA_PROFILE {
+			t_frame := prof_now()
+		}
 
 		quit := !k2.update() || (ctrl_held() && k2.key_went_down(.Q))
+		when MALLORCA_PROFILE {
+			if prof_run_expired() {
+				quit = true
+			}
+		}
 		if !quit {
 			handle_input(&app)
 			if app.host_active {
 				host_poll(&app.host) // apply remote edits/joins before ticking
-				// If the player we were viewing left, fall back to our grid.
-				if app.view_tint != HOST_VIEW && viewed_sim(&app) == nil {
+			}
+			if app.p2p_active {
+				when MALLORCA_PROFILE {
+					t_poll := prof_now()
+				}
+				p2p.poll(&app.p2p) // apply remote snapshots before ticking
+				when MALLORCA_PROFILE {
+					prof_record(&prof_poll, prof_since(t_poll))
+					t_roster := prof_now()
+				}
+				apply_roster(
+					&app,
+					p2p.roster_tick(
+						&app.p2p,
+						app.grid,
+						app.tick,
+						app.edit_seqs,
+						app.bpm,
+						app.playing,
+						BPM_MIN,
+						BPM_MAX,
+					),
+				)
+				when MALLORCA_PROFILE {
+					prof_record(&prof_roster, prof_since(t_roster))
+				}
+				// If the peer we were viewing left, fall back to our grid.
+				if _, still_there := viewed_sim(&app); app.view_tint != HOST_VIEW && !still_there {
 					app.view_tint = HOST_VIEW
 				}
 			}
@@ -316,24 +535,36 @@ main :: proc() {
 			// The window shows either our own grid or a remote player's
 			// (read-only, in that player's color). Layout follows whichever
 			// grid is on screen, since sizes can differ.
-			view := viewed_sim(&app)
-			disp := view.grid if view != nil else app.grid
-			layout := compute_layout(disp, app.zoom)
+			view, has_view := viewed_sim(&app)
+			disp := view.grid if has_view else app.grid
+			hud := status_font(disp)
+			layout := compute_layout(disp, status_band(&app, hud), app.zoom)
 			k2.clear(BG)
-			draw_border(&app)
-			if view != nil {
+			draw_border(&app, disp, layout)
+			if has_view {
 				draw_grid(view.grid, view.marks, font, layout, remote_tint(view.tint))
 			} else {
-				// Jam canvas: our editable grid plus every remote player's
-				// input overlaid in their color.
+				// Jam canvas: LWW compose of our grid + every remote peer.
 				draw_selection(&app, layout)
-				draw_grid(app.grid, app.marks, font, layout, FG)
-				draw_jam_overlay(&app, font, layout)
+				if app.p2p_active && len(app.p2p.sims) > 0 {
+					draw_jam_grid(&app, font, layout)
+				} else {
+					draw_grid(app.grid, app.marks, font, layout, FG)
+				}
 				draw_cursor(&app, font, layout)
 			}
-			draw_legend(&app, font, layout)
-			draw_status(&app, font, layout)
-			draw_hover_readout(disp, font_italic, layout, app.cursor_x, app.cursor_y, view == nil)
+			draw_legend(hud, &app, font, layout)
+			draw_room_status(hud, &app, font, layout)
+			draw_status(hud, &app, font, layout)
+			draw_hover_readout(
+				hud,
+				disp,
+				font_italic,
+				layout,
+				app.cursor_x,
+				app.cursor_y,
+				!has_view,
+			)
 			draw_conn(&app)
 			draw_operator_overview(&app, font)
 			k2.present()
@@ -342,10 +573,20 @@ main :: proc() {
 		}
 
 		pool->drain()
+		when MALLORCA_PROFILE {
+			// Only completed frames; the quitting iteration skips the body.
+			if !quit {
+				prof_record(&prof_frame, prof_since(t_frame))
+			}
+		}
 		if quit {
 			flush_notes(&app.midi, &app.sus) // silence any sustained notes before exit
 			break
 		}
+	}
+
+	when MALLORCA_PROFILE {
+		prof_dump()
 	}
 }
 
@@ -446,15 +687,15 @@ handle_input :: proc(app: ^App) {
 		app.audition = false
 	}
 
-	// Host: cycle the window between our own grid and each remote player's
-	// grid. '`' steps forward, Shift+'`' backward.
-	if app.host_active && k2.key_went_down(.Backtick) {
+	// P2p: cycle the window between our own grid and each remote peer's grid.
+	// '`' steps forward, Shift+'`' backward.
+	if (app.p2p_active || app.host_active) && k2.key_went_down(.Backtick) {
 		cycle_view(app, -1 if shift_held() else +1)
 	}
 
 	// While viewing a remote player's grid the window is read-only: only the
 	// view cycle (above) and play/pause act; all edits are suppressed.
-	if viewed_sim(app) != nil {
+	if _, viewing := viewed_sim(app); viewing {
 		if k2.key_went_down(.Space) {
 			toggle_play(app)
 		}
@@ -564,6 +805,10 @@ handle_shortcuts :: proc(app: ^App) {
 	if k2.key_went_down(.V) {paste_clip(app)}
 	if k2.key_went_down(.A) {select_all(app)}
 	if k2.key_went_down(.Z) {undo(app)}
+	if k2.key_went_down(.R) && app.p2p_active {
+		system_clipboard_write(app.p2p.hash)
+		set_status(app, fmt.aprintf("room id copied"))
+	}
 }
 
 adjust_zoom :: proc(app: ^App, delta: f32) {
@@ -578,6 +823,9 @@ toggle_play :: proc(app: ^App) {
 	if !app.playing {
 		flush_notes(&app.midi, &app.sus) // don't leave notes hanging when stopping
 	}
+	if app.p2p_active {
+		p2p.share_transport(&app.p2p, app.bpm, app.playing)
+	}
 	set_status(app, fmt.aprintf("%s", "playing" if app.playing else "paused"))
 }
 
@@ -586,55 +834,86 @@ toggle_play :: proc(app: ^App) {
 //--------------//
 
 // app.view_tint == HOST_VIEW means the window shows the host's own (editable)
-// grid; any other value selects the remote player carrying that tint.
+// grid; any other value selects the remote player with that view_id.
 HOST_VIEW :: -1
 
-// The remote player's sim currently on screen, or nil when we're showing our
-// own grid (or the viewed player has since left).
-viewed_sim :: proc(app: ^App) -> ^Host_Sim {
-	if !app.host_active || app.view_tint == HOST_VIEW {
-		return nil
-	}
-	for _, sim in app.host.sims {
-		if sim.tint == app.view_tint {
-			return sim
-		}
-	}
-	return nil
+// The remote peer's sim currently on screen, or nil when we're showing our
+// own grid (or the viewed peer has since left).
+// What the renderer needs from a remote participant, whichever transport
+// produced it. The relay ticks a VM per player (`Host_Sim`) while the mesh
+// keeps untickable snapshot replicas (`p2p.Peer_Sim`), so the two keep their
+// own structs and only this projection is shared.
+Remote_View :: struct {
+	grid:  orca.Grid,
+	marks: []orca.Mark,
+	name:  string,
+	tint:  int,
+	tick:  uint,
 }
 
-// Per-player glyph color, so each remote player's input is distinct from the
-// host's white and from every other player.
+// The remote participant on screen, or ok=false when we're showing our own
+// grid (or the one being viewed has since left).
+viewed_sim :: proc(app: ^App) -> (view: Remote_View, ok: bool) {
+	if app.view_tint == HOST_VIEW {
+		return
+	}
+	// Relay mode keys the view on `tint`, mesh mode on `view_id`; only one
+	// transport is ever active, so the two never race for `view_tint`.
+	if app.host_active {
+		for _, sim in app.host.sims {
+			if sim.tint == app.view_tint {
+				return Remote_View{sim.grid, sim.marks, sim.name, sim.tint, sim.tick}, true
+			}
+		}
+		return
+	}
+	if app.p2p_active {
+		for _, sim in app.p2p.sims {
+			if sim.view_id == app.view_tint {
+				return Remote_View{sim.grid, sim.marks, sim.name, sim.tint, sim.tick}, true
+			}
+		}
+	}
+	return
+}
+
+// Per-player glyph color from REMOTE_TINTS (index = hash of nickname).
 remote_tint :: proc(tint: int) -> k2.Color {
 	tints := REMOTE_TINTS // a constant array can't be indexed by a variable
 	return tints[tint %% len(tints)]
 }
 
 // Step the window's view across participants: our own grid (HOST_VIEW) then
-// each remote player in join order, wrapping around. `dir` is +1 or -1.
+// each remote peer in join order (view_id), wrapping around. `dir` is +1 or -1.
 cycle_view :: proc(app: ^App, dir: int) {
-	if !app.host_active {
+	if !app.p2p_active && !app.host_active {
 		return
 	}
-	// Ordered participant list: HOST_VIEW first, then remote tints ascending
-	// (tints are handed out monotonically, so ascending == join order).
-	tints := make([dynamic]int, context.temp_allocator)
-	append(&tints, HOST_VIEW)
-	for _, sim in app.host.sims {
-		append(&tints, sim.tint)
+	// Ordered participant list: HOST_VIEW first, then remote view_ids ascending
+	// (assigned monotonically on join).
+	ids := make([dynamic]int, context.temp_allocator)
+	append(&ids, HOST_VIEW)
+	if app.host_active {
+		for _, sim in app.host.sims {
+			append(&ids, sim.tint)
+		}
+	} else {
+		for _, sim in app.p2p.sims {
+			append(&ids, sim.view_id)
+		}
 	}
-	slice.sort(tints[:])
+	slice.sort(ids[:])
 
 	cur := 0
-	for t, i in tints {
-		if t == app.view_tint {
+	for id, i in ids {
+		if id == app.view_tint {
 			cur = i
 			break
 		}
 	}
-	app.view_tint = tints[(cur + dir + len(tints)) %% len(tints)]
+	app.view_tint = ids[(cur + dir + len(ids)) %% len(ids)]
 
-	if sim := viewed_sim(app); sim != nil {
+	if sim, ok := viewed_sim(app); ok {
 		name := sim.name if sim.name != "" else "player"
 		set_status(app, fmt.aprintf("viewing %s (read-only)", name))
 	} else {
@@ -642,11 +921,44 @@ cycle_view :: proc(app: ^App, dir: int) {
 	}
 }
 
+// Stamp one cell with the next edit generation (jam LWW ink).
+touch_edit_seq :: proc(app: ^App, x, y: int) {
+	if x < 0 || y < 0 || x >= app.grid.width || y >= app.grid.height {
+		return
+	}
+	if len(app.edit_seqs) != len(app.grid.cells) {
+		return
+	}
+	app.edit_seq += 1
+	app.edit_seqs[y * app.grid.width + x] = app.edit_seq
+}
+
+// Rebuild edit_seqs for a new grid size, copying the overlapping region from
+// the previous buffer (same convention as orca.resize_grid).
+resize_edit_seqs :: proc(app: ^App, old_w, old_h: int) {
+	old := app.edit_seqs
+	app.edit_seqs = make([]u64, len(app.grid.cells))
+	if len(old) > 0 && old_w > 0 && old_h > 0 {
+		w := min(old_w, app.grid.width)
+		h := min(old_h, app.grid.height)
+		for y in 0 ..< h {
+			for x in 0 ..< w {
+				oi := y * old_w + x
+				if oi < len(old) {
+					app.edit_seqs[y * app.grid.width + x] = old[oi]
+				}
+			}
+		}
+	}
+	delete(old)
+}
+
 // Write a glyph at the cursor, collapsing any selection. In insert mode
 // the cursor then advances east (stopping at the right edge).
 put_glyph :: proc(app: ^App, glyph: u8) {
 	push_undo(app)
 	orca.grid_set(app.grid, app.cursor_x, app.cursor_y, glyph)
+	touch_edit_seq(app, app.cursor_x, app.cursor_y)
 	app.sel_active = false
 	app.dirty = true
 	if app.insert_mode {
@@ -662,6 +974,7 @@ clear_cell :: proc(app: ^App) {
 	for y in y0 ..= y1 {
 		for x in x0 ..= x1 {
 			orca.grid_set(app.grid, x, y, orca.EMPTY_GLYPH)
+			touch_edit_seq(app, x, y)
 		}
 	}
 	app.dirty = true
@@ -669,6 +982,9 @@ clear_cell :: proc(app: ^App) {
 
 adjust_bpm :: proc(app: ^App, d: int) {
 	app.bpm = clamp(app.bpm + d, BPM_MIN, BPM_MAX)
+	if app.p2p_active {
+		p2p.share_transport(&app.p2p, app.bpm, app.playing)
+	}
 	set_status(app, fmt.aprintf("%d bpm", app.bpm))
 }
 
@@ -745,6 +1061,7 @@ cut_selection :: proc(app: ^App) {
 	for y in y0 ..= y1 {
 		for x in x0 ..= x1 {
 			orca.grid_set(app.grid, x, y, orca.EMPTY_GLYPH)
+			touch_edit_seq(app, x, y)
 		}
 	}
 	app.sel_active = false
@@ -798,12 +1115,9 @@ paste_clip :: proc(app: ^App) {
 	push_undo(app)
 	for y in 0 ..< app.clip_h {
 		for x in 0 ..< app.clip_w {
-			orca.grid_set(
-				app.grid,
-				app.cursor_x + x,
-				app.cursor_y + y,
-				app.clip_cells[y * app.clip_w + x],
-			)
+			gx, gy := app.cursor_x + x, app.cursor_y + y
+			orca.grid_set(app.grid, gx, gy, app.clip_cells[y * app.clip_w + x])
+			touch_edit_seq(app, gx, gy)
 		}
 	}
 	app.sel_active = false // drop the highlight so the paste is visible
@@ -829,6 +1143,7 @@ paste_text :: proc(app: ^App, text: string) {
 		case:
 			glyph := c if c >= '!' && c <= '~' else orca.EMPTY_GLYPH
 			orca.grid_set(app.grid, x, y, glyph)
+			touch_edit_seq(app, x, y)
 			x += 1
 		}
 	}
@@ -846,11 +1161,13 @@ resize_grid_by :: proc(app: ^App, dw, dh: int) {
 		return
 	}
 	push_undo(app)
+	old_w, old_h := app.grid.width, app.grid.height
 	ng := orca.resize_grid(app.grid, nw, nh)
 	orca.destroy_grid(&app.grid)
 	app.grid = ng
 	delete(app.marks)
 	app.marks = orca.make_marks(app.grid)
+	resize_edit_seqs(app, old_w, old_h)
 	app.cursor_x = clamp(app.cursor_x, 0, nw - 1)
 	app.cursor_y = clamp(app.cursor_y, 0, nh - 1)
 	app.sel_active = false
@@ -889,6 +1206,9 @@ undo :: proc(app: ^App) {
 		return
 	}
 	snap := pop(&app.undo)
+	old_w, old_h := app.grid.width, app.grid.height
+	old_cells := make([]u8, len(app.grid.cells), context.temp_allocator)
+	copy(old_cells, app.grid.cells)
 	resized := snap.width != app.grid.width || snap.height != app.grid.height
 	orca.destroy_grid(&app.grid)
 	app.grid = orca.Grid {
@@ -899,6 +1219,26 @@ undo :: proc(app: ^App) {
 	if resized {
 		delete(app.marks)
 		app.marks = orca.make_marks(app.grid)
+		resize_edit_seqs(app, old_w, old_h)
+	}
+	// Stamp every cell that differs so jam LWW peers see the undo as ink.
+	w := min(old_w, app.grid.width)
+	h := min(old_h, app.grid.height)
+	for y in 0 ..< h {
+		for x in 0 ..< w {
+			if old_cells[y * old_w + x] != app.grid.cells[y * app.grid.width + x] {
+				touch_edit_seq(app, x, y)
+			}
+		}
+	}
+	if resized {
+		for y in 0 ..< app.grid.height {
+			for x in 0 ..< app.grid.width {
+				if x >= old_w || y >= old_h {
+					touch_edit_seq(app, x, y)
+				}
+			}
+		}
 	}
 	app.cursor_x = clamp(snap.cursor_x, 0, app.grid.width - 1)
 	app.cursor_y = clamp(snap.cursor_y, 0, app.grid.height - 1)
@@ -1002,10 +1342,19 @@ update_sim :: proc(app: ^App) {
 		ticks := 0
 		for app.accum >= frame && ticks < MAX_TICKS_PER_FRAME {
 			app.accum -= frame
-			step_tick(app) // host's own grid (runs advance_notes once for all)
+			step_tick(app) // our own grid (runs advance_notes once for all)
 			if app.host_active {
 				host_tick(&app.host, &app.midi, &app.sus) // remote players
 				host_send_own(&app.host, app.grid, app.tick) // our grid -> /admin
+			}
+			if app.p2p_active {
+				when MALLORCA_PROFILE {
+					t_send := prof_now()
+				}
+				p2p.send_own(&app.p2p, app.grid, app.tick, app.edit_seqs)
+				when MALLORCA_PROFILE {
+					prof_record(&prof_send, prof_since(t_send))
+				}
 			}
 			ticks += 1
 		}
@@ -1019,8 +1368,8 @@ update_sim :: proc(app: ^App) {
 		// copy of the grid without advancing the simulation.
 		orca.preview_marks(app.grid, app.marks, app.tick, 0)
 		app.dirty = false
-		if app.host_active {
-			host_send_own(&app.host, app.grid, app.tick) // reflect paused edits on /admin
+		if app.p2p_active {
+			p2p.send_own(&app.p2p, app.grid, app.tick, app.edit_seqs)
 		}
 	}
 }
@@ -1080,44 +1429,74 @@ Layout :: struct {
 	cell_w:    f32,
 	cell_h:    f32,
 	font_size: f32,
+	// Top-left of the grid in window coordinates. Not a constant `MARGIN` any
+	// more: the grid is centred in whatever the status band leaves, so the
+	// letterbox has to be carried rather than assumed.
+	origin_x:  f32,
+	origin_y:  f32,
 }
 
-// At 100%, the grid spans the full window width. Keyboard zoom scales the
-// resulting cells and font together without changing the simulation grid.
-compute_layout :: proc(grid: orca.Grid, zoom: f32) -> Layout {
-	cell_w := (f32(k2.get_screen_width()) - MARGIN * 2) / f32(grid.width) * zoom
-	font_size := cell_w / ADVANCE_EM
-	return Layout{cell_w = cell_w, cell_h = font_size * LINE_EM, font_size = font_size}
+// Fit the grid into the window above `band`, scaling to whichever axis binds
+// first so the whole grid is always on screen at zoom 1, then centre it in the
+// leftover. Keyboard zoom multiplies that fit without changing the simulation
+// grid (zooming in may overflow the band — same tradeoff as before the HUD fit).
+//
+// This used to fit width only, which is why the grid could run past the bottom
+// of the window and under the HUD.
+compute_layout :: proc(grid: orca.Grid, band: f32, zoom: f32) -> Layout {
+	avail_w := f32(k2.get_screen_width()) - MARGIN * 2
+	avail_h := f32(k2.get_screen_height()) - band - MARGIN * 2
+	font_size :=
+		min(avail_w / (f32(grid.width) * ADVANCE_EM), avail_h / (f32(grid.height) * LINE_EM)) *
+		zoom
+	cell_w := font_size * ADVANCE_EM
+	cell_h := font_size * LINE_EM
+	return Layout {
+		cell_w = cell_w,
+		cell_h = cell_h,
+		font_size = font_size,
+		origin_x = MARGIN + (avail_w - cell_w * f32(grid.width)) / 2,
+		origin_y = MARGIN + (avail_h - cell_h * f32(grid.height)) / 2,
+	}
 }
 
 // Solid frame just inside the window edges signalling play state:
 // green while playing, nothing while paused.
-draw_border :: proc(app: ^App) {
+draw_border :: proc(app: ^App, grid: orca.Grid, layout: Layout) {
 	// Green frame while playing, or while the Enter audition tone sounds.
 	if !app.playing && !app.audition {
 		return
 	}
 	rect := k2.Rect {
-		BORDER_INSET,
-		BORDER_INSET,
-		f32(k2.get_screen_width()) - BORDER_INSET * 2,
-		f32(k2.get_screen_height()) - BORDER_INSET * 2,
+		layout.origin_x - BORDER_INSET,
+		layout.origin_y - BORDER_INSET,
+		layout.cell_w * f32(grid.width) + BORDER_INSET * 2,
+		layout.cell_h * f32(grid.height) + BORDER_INSET * 2,
 	}
 	k2.draw_rect_outline(rect, BORDER_THICKNESS, PLAY_BORDER)
 }
 
-// M9: a small square in the top-right showing host<->server link status.
-// Drawn only in host mode.
+// A small square in the top-right showing p2p room connection status.
+// Drawn only when a room is open.
 draw_conn :: proc(app: ^App) {
-	if !app.host_active {
-		return
-	}
 	color := CONN_BAD
-	#partial switch app.host.status {
-	case .Connected:
-		color = CONN_OK
-	case .Connecting:
-		color = CONN_WAIT
+	switch {
+	case app.host_active:
+		#partial switch app.host.status {
+		case .Connected:
+			color = CONN_OK
+		case .Connecting:
+			color = CONN_WAIT
+		}
+	case app.p2p_active:
+		#partial switch app.p2p.status {
+		case .Connected:
+			color = CONN_OK
+		case .Alone:
+			color = CONN_WAIT
+		}
+	case:
+		return
 	}
 	size: f32 = 14
 	x := f32(k2.get_screen_width()) - MARGIN - size
@@ -1373,8 +1752,8 @@ draw_operator_overview :: proc(app: ^App, font: k2.Font) {
 // renderer uses), or (-1, -1) when the pointer is outside the grid.
 hover_cell :: proc(grid: orca.Grid, layout: Layout) -> (cx, cy: int) {
 	m := k2.get_mouse_position()
-	fx := (m.x - MARGIN) / layout.cell_w
-	fy := (m.y - MARGIN) / layout.cell_h
+	fx := (m.x - layout.origin_x) / layout.cell_w
+	fy := (m.y - layout.origin_y) / layout.cell_h
 	if fx < 0 || fy < 0 {
 		return -1, -1
 	}
@@ -1396,6 +1775,7 @@ hover_cell :: proc(grid: orca.Grid, layout: Layout) -> (cx, cy: int) {
 // mouse-moved events to the key window only, so an unfocused window reports a
 // stale pointer.
 draw_hover_readout :: proc(
+	hud: f32,
 	grid: orca.Grid,
 	font: k2.Font,
 	layout: Layout,
@@ -1418,11 +1798,11 @@ draw_hover_readout :: proc(
 	if name == "" {
 		return
 	}
-	size := layout.font_size * STATUS_SCALE
+	size := hud
 	w := k2.measure_text(name, size, font).x
 	x := f32(k2.get_screen_width()) - MARGIN - w
-	// One line above the status bar (which sits at height - size - MARGIN).
-	y := f32(k2.get_screen_height()) - size * 2 - MARGIN
+	// Row 2, sharing it with the peer legend, which is left-aligned.
+	y := status_row_y(hud, 2)
 	k2.draw_text(name, {x, y}, size, SECONDARY, font)
 }
 
@@ -1433,8 +1813,8 @@ draw_selection :: proc(app: ^App, layout: Layout) {
 	}
 	x0, y0, x1, y1 := selection_rect(app)
 	rect := k2.Rect {
-		MARGIN + f32(x0) * layout.cell_w,
-		MARGIN + f32(y0) * layout.cell_h,
+		layout.origin_x + f32(x0) * layout.cell_w,
+		layout.origin_y + f32(y0) * layout.cell_h,
 		f32(x1 - x0 + 1) * layout.cell_w,
 		f32(y1 - y0 + 1) * layout.cell_h,
 	}
@@ -1456,7 +1836,10 @@ draw_grid :: proc(
 		for x in 0 ..< grid.width {
 			glyph := orca.grid_get(grid, x, y)
 			mark := marks[y * grid.width + x]
-			pos := k2.Vec2{MARGIN + f32(x) * layout.cell_w, MARGIN + f32(y) * layout.cell_h}
+			pos := k2.Vec2 {
+				layout.origin_x + f32(x) * layout.cell_w,
+				layout.origin_y + f32(y) * layout.cell_h,
+			}
 			color := base
 			if glyph == orca.EMPTY_GLYPH {
 				// Ruler overlay: '+' every 8x8 intersection, dim '.' elsewhere.
@@ -1519,12 +1902,17 @@ draw_cursor :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		return
 	}
 	glyph := orca.grid_get(app.grid, app.cursor_x, app.cursor_y)
+	if app.p2p_active && len(app.p2p.sims) > 0 {
+		order := jam_sims_ordered(app)
+		remotes := make([]p2p.Jam_Remote_Cell, len(order), context.temp_allocator)
+		glyph, _ = jam_cell_at(app, app.cursor_x, app.cursor_y, order, remotes)
+	}
 	if glyph == orca.EMPTY_GLYPH {
 		glyph = '@'
 	}
 	pos := k2.Vec2 {
-		MARGIN + f32(app.cursor_x) * layout.cell_w,
-		MARGIN + f32(app.cursor_y) * layout.cell_h,
+		layout.origin_x + f32(app.cursor_x) * layout.cell_w,
+		layout.origin_y + f32(app.cursor_y) * layout.cell_h,
 	}
 	rect := k2.Rect{pos.x, pos.y, layout.cell_w, layout.cell_h}
 	k2.draw_rect(rect, CURSOR_BG)
@@ -1532,11 +1920,11 @@ draw_cursor :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	k2.draw_text(string(buf[:]), pos, layout.font_size, CURSOR_FG, font)
 }
 
-draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
+draw_status :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
 	text: string
 	if app.status_msg != "" {
 		text = app.status_msg
-	} else if sim := viewed_sim(app); sim != nil {
+	} else if sim, ok := viewed_sim(app); ok {
 		who := sim.name if sim.name != "" else "player"
 		text = fmt.tprintf(
 			"viewing %s   %dx%d   %dt   read-only   ` to cycle",
@@ -1554,10 +1942,10 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 		if app.midi.ok {
 			mode = fmt.tprintf("%s  midi%s", mode, "+dev" if app.midi.has_dest else "")
 		}
-		// Host mode: show how many remote players are connected and how to view
-		// their grids. A live 0 here means no browser has joined this room.
-		if app.host_active {
-			n := len(app.host.sims)
+		// P2p mode: show how many remote peers are connected and how to view
+		// their grids. A live 0 here means nobody else has joined this room.
+		if app.p2p_active {
+			n := len(app.p2p.sims)
 			hint := "  ` to view" if n > 0 else ""
 			mode = fmt.tprintf("%s  %d remote%s", mode, n, hint)
 		}
@@ -1575,71 +1963,208 @@ draw_status :: proc(app: ^App, font: k2.Font, layout: Layout) {
 	}
 	// The status line is heads-up/debug info, so draw it smaller than the
 	// grid glyphs (60%) to keep it fitting within the window width.
-	size := layout.font_size * STATUS_SCALE
-	y := f32(k2.get_screen_height()) - size - MARGIN
-	k2.draw_text(text, {MARGIN, y}, size, STATUS, font)
+	size := hud
+	k2.draw_text(text, {MARGIN, status_row_y(hud, 1)}, size, STATUS, font)
 }
 
-// Jam canvas (M8): overlay every remote player's non-empty glyphs onto the
-// host's own grid in that player's tint, so the host sees everyone's input at
-// once. Only cells the host left empty are painted, so the host's own white
-// glyphs stay legible; remote input reads as color. Sims are drawn in tint
-// (join) order so overlapping remote cells don't flicker with map iteration.
-draw_jam_overlay :: proc(app: ^App, font: k2.Font, layout: Layout) {
-	if !app.host_active || len(app.host.sims) == 0 {
-		return
-	}
-	order := make([dynamic]^Host_Sim, context.temp_allocator)
-	for _, sim in app.host.sims {
+// Remotes sorted by view_id for jam LWW seq-0 fallback (stable join order).
+@(private = "file")
+jam_sims_ordered :: proc(app: ^App) -> []^p2p.Peer_Sim {
+	order := make([dynamic]^p2p.Peer_Sim, context.temp_allocator)
+	for _, sim in app.p2p.sims {
 		append(&order, sim)
 	}
-	slice.sort_by(order[:], proc(a, b: ^Host_Sim) -> bool {return a.tint < b.tint})
+	slice.sort_by(order[:], proc(a, b: ^p2p.Peer_Sim) -> bool {return a.view_id < b.view_id})
+	return order[:]
+}
 
+// Visible glyph + tint for one jam cell (LWW user ink, else legacy overlay).
+// `remotes` is a caller-owned scratch buffer, refilled each call and passed in
+// so a full-grid redraw doesn't allocate one slice per cell per frame.
+jam_cell_at :: proc(
+	app: ^App,
+	x, y: int,
+	order: []^p2p.Peer_Sim,
+	remotes: []p2p.Jam_Remote_Cell,
+) -> (
+	glyph: u8,
+	tint: int,
+) {
+	local_glyph := orca.grid_get(app.grid, x, y)
+	local_seq: u64 = 0
+	if len(app.edit_seqs) == len(app.grid.cells) {
+		local_seq = app.edit_seqs[y * app.grid.width + x]
+	}
+	for sim, i in order {
+		rg: u8 = orca.EMPTY_GLYPH
+		rs: u64 = 0
+		if x < sim.grid.width && y < sim.grid.height {
+			rg = orca.grid_get(sim.grid, x, y)
+			if len(sim.seqs) == len(sim.grid.cells) {
+				rs = sim.seqs[y * sim.grid.width + x]
+			}
+		}
+		remotes[i] = p2p.Jam_Remote_Cell {
+			glyph = rg,
+			seq   = rs,
+			tint  = sim.tint,
+		}
+	}
+	return p2p.jam_pick(local_glyph, local_seq, remotes[:len(order)]) // filled prefix only
+}
+
+// Jam canvas: draw the host grid with last-write-wins compose against remotes.
+// Marks always come from the local sim; glyph/color follow p2p.jam_pick.
+draw_jam_grid :: proc(app: ^App, font: k2.Font, layout: Layout) {
+	order := jam_sims_ordered(app)
+	remotes := make([]p2p.Jam_Remote_Cell, len(order), context.temp_allocator) // one scratch, reused per cell
+	grid := app.grid
+	marks := app.marks
 	buf: [1]u8
-	for sim in order {
-		color := remote_tint(sim.tint)
-		w := min(sim.grid.width, app.grid.width)
-		h := min(sim.grid.height, app.grid.height)
-		for y in 0 ..< h {
-			for x in 0 ..< w {
-				glyph := orca.grid_get(sim.grid, x, y)
-				if glyph == orca.EMPTY_GLYPH {
-					continue
+	for y in 0 ..< grid.height {
+		for x in 0 ..< grid.width {
+			glyph, jam_tint := jam_cell_at(app, x, y, order, remotes)
+			mark := marks[y * grid.width + x]
+			pos := k2.Vec2 {
+				layout.origin_x + f32(x) * layout.cell_w,
+				layout.origin_y + f32(y) * layout.cell_h,
+			}
+			base := FG if jam_tint == p2p.JAM_LOCAL else remote_tint(jam_tint)
+			color := base
+			if glyph == orca.EMPTY_GLYPH {
+				if x % RULER_SPACING == 0 && y % RULER_SPACING == 0 {
+					glyph = '+'
+					color = RULER
+				} else {
+					color = DIM
 				}
-				// Don't paint over the host's own glyphs — keep those white.
-				if orca.grid_get(app.grid, x, y) != orca.EMPTY_GLYPH {
-					continue
+			}
+			switch {
+			case .Haste_Input in mark:
+				color = HASTE
+			case .Output in mark:
+				rect := k2.Rect{pos.x, pos.y, layout.cell_w, layout.cell_h}
+				k2.draw_rect(rect, PROJECTED if .Projected in mark else OUTPUT_BG)
+				color = OUTPUT_FG
+			case .Input in mark:
+				color = INPUT
+			case .Lock in mark:
+				color = LOCKED
+			}
+			// Remote-won ink keeps its tint unless a mark overrode it above
+			// for local operator feedback on that cell.
+			if jam_tint != p2p.JAM_LOCAL && glyph != orca.EMPTY_GLYPH && glyph != '+' {
+				if !(.Haste_Input in mark || .Output in mark || .Input in mark || .Lock in mark) {
+					color = remote_tint(jam_tint)
 				}
-				pos := k2.Vec2{MARGIN + f32(x) * layout.cell_w, MARGIN + f32(y) * layout.cell_h}
-				buf[0] = glyph
-				k2.draw_text(string(buf[:]), pos, layout.font_size, color, font)
+			}
+			buf[0] = glyph
+			k2.draw_text(string(buf[:]), pos, layout.font_size, color, font)
+			if .Projected in mark {
+				thickness := PROJECTED_BORDER_THICKNESS
+				if y == 0 || .Projected not_in marks[(y - 1) * grid.width + x] {
+					k2.draw_rect({pos.x, pos.y, layout.cell_w, thickness}, PROJECTED)
+				}
+				if y == grid.height - 1 || .Projected not_in marks[(y + 1) * grid.width + x] {
+					k2.draw_rect(
+						{pos.x, pos.y + layout.cell_h - thickness, layout.cell_w, thickness},
+						PROJECTED,
+					)
+				}
+				if x == 0 || .Projected not_in marks[y * grid.width + x - 1] {
+					k2.draw_rect({pos.x, pos.y, thickness, layout.cell_h}, PROJECTED)
+				}
+				if x == grid.width - 1 || .Projected not_in marks[y * grid.width + x + 1] {
+					k2.draw_rect(
+						{pos.x + layout.cell_w - thickness, pos.y, thickness, layout.cell_h},
+						PROJECTED,
+					)
+				}
 			}
 		}
 	}
+}
+
+// Room status: room name, peer count, truncated hash, and the copy-id hint,
+// on its own HUD line above the legend/status lines. Shown only while a p2p
+// room is open.
+draw_room_status :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
+	if !app.p2p_active {
+		return
+	}
+	size := hud
+	y := status_row_y(hud, 3)
+	x := f32(MARGIN)
+
+	room_name := app.p2p.room_name
+	k2.draw_text(room_name, {x, y}, size, SECONDARY, font)
+	x += f32(len(room_name)) * size * ADVANCE_EM + size * 1.1
+
+	n := len(app.p2p.sims)
+	peers_text := fmt.tprintf("%d peer%s", n, "" if n == 1 else "s")
+	k2.draw_text(peers_text, {x, y}, size, STATUS, font)
+	x += f32(len(peers_text)) * size * ADVANCE_EM + size * 1.1
+
+	hash_text := p2p_hash_display(app.p2p.hash)
+	k2.draw_text(hash_text, {x, y}, size, STATUS, font)
+	x += f32(len(hash_text)) * size * ADVANCE_EM + size * 1.1
+
+	k2.draw_text("^R copy id", {x, y}, size, STATUS, font)
+}
+
+// Apply what a roster tick decided. The p2p package is deliberately unaware of
+// `App` — it returns outcomes and this is where they land, so the mesh layer
+// never reaches into the host's status line or transport clock.
+apply_roster :: proc(app: ^App, res: p2p.Roster_Result) {
+	// res.statuses live in roster_tick's allocator (temp by default), but
+	// set_status takes heap ownership and frees on expiry — clone so it never
+	// frees recycled temp memory.
+	for line in res.statuses {
+		set_status(app, strings.clone(line))
+	}
+	if bpm, ok := res.bpm.?; ok {
+		app.bpm = bpm
+	}
+	if playing, ok := res.playing.?; ok {
+		app.playing = playing
+	}
+	if res.flush_notes {
+		flush_notes(&app.midi, &app.sus)
+	}
+}
+
+// Truncate the bare room hash for HUD display (first10…last6). `app.p2p.hash`
+// is already glyph-free; this only shortens.
+@(private = "file")
+p2p_hash_display :: proc(hash: string) -> string {
+	if len(hash) <= 16 {
+		return hash
+	}
+	return fmt.tprintf("%s…%s", hash[:10], hash[len(hash) - 6:])
 }
 
 // Legend (M8): a compact row of colored name chips just above the status line,
 // mapping each remote player's tint to their name. Drawn only in host mode and
 // only when at least one remote player is connected (otherwise the status
 // line's "N remote" already says everything).
-draw_legend :: proc(app: ^App, font: k2.Font, layout: Layout) {
-	if !app.host_active || len(app.host.sims) == 0 {
+draw_legend :: proc(hud: f32, app: ^App, font: k2.Font, layout: Layout) {
+	if !app.p2p_active || len(app.p2p.sims) == 0 {
 		return
 	}
-	order := make([dynamic]^Host_Sim, context.temp_allocator)
-	for _, sim in app.host.sims {
+	order := make([dynamic]^p2p.Peer_Sim, context.temp_allocator)
+	for _, sim in app.p2p.sims {
 		append(&order, sim)
 	}
-	slice.sort_by(order[:], proc(a, b: ^Host_Sim) -> bool {return a.tint < b.tint})
+	slice.sort_by(order[:], proc(a, b: ^p2p.Peer_Sim) -> bool {return a.view_id < b.view_id})
 
-	size := layout.font_size * STATUS_SCALE
-	// One line above the status line (status sits at height - size - MARGIN).
-	y := f32(k2.get_screen_height()) - size * 2 - MARGIN - size * 0.4
+	size := hud
+	// Row 2, sharing it with the hover readout, which is right-aligned.
+	y := status_row_y(hud, 2)
 	x := f32(MARGIN)
 	dot := size * 0.6
 	for sim in order {
 		name := sim.name if sim.name != "" else "player"
-		// Filled swatch in the player's tint, then their name in the same color.
+		// Filled swatch in the player's name-hash color, then their name.
 		k2.draw_rect(k2.Rect{x, y + (size - dot) * 0.5, dot, dot}, remote_tint(sim.tint))
 		x += dot + size * 0.35
 		k2.draw_text(name, {x, y}, size, remote_tint(sim.tint), font)
