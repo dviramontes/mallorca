@@ -1,6 +1,10 @@
+# Rust is deliberately omitted: fofoca/rust-toolchain.toml is the single source
+# of truth for the toolchain (channel 1.95.0), and CI reads that file. A mise
+# `rust` entry exports RUSTUP_TOOLCHAIN, which overrides the nested pin and makes
+# local builds diverge from CI. rustup installs the pinned version on the first
+# cargo invocation inside fofoca/ (see AGENTS.md).
 [tools]
 odin = "latest"
-rust = "latest"
 just = "latest"
 erlang = "latest"
 elixir = "latest"
