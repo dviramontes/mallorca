@@ -381,14 +381,19 @@ host_poll :: proc(st: ^Host_State) -> (alive: bool) {
 
 // Advance every remote player's grid one tick and stream it back. The caller
 // runs advance_notes once per tick (shared with the host's own grid).
-host_tick :: proc(st: ^Host_State, midi: ^Midi, sus: ^[dynamic]Sus_Note) {
+host_tick :: proc(
+	st: ^Host_State,
+	midi: ^Midi,
+	sus: ^[dynamic]Sus_Note,
+	udp: ^Udp_Output,
+) {
 	if st.status != .Connected {
 		return
 	}
 	for pid, sim in st.sims {
 		orca.run_tick(sim.grid, sim.marks, sim.tick, 0, &sim.events)
 		sim.tick += 1
-		dispatch_events(midi, sus, sim.events[:])
+		dispatch_events(midi, sus, udp, sim.events[:])
 		host_send_snapshot(&st.conn, pid, sim.grid, sim.tick)
 	}
 }
@@ -427,7 +432,9 @@ run_net_host :: proc(debug := false, want_room := "") {
 	fmt.println("net-host: simulating; Ctrl-C to quit ...")
 
 	midi := midi_init(debug)
+	udp := udp_init(debug)
 	sus: [dynamic]Sus_Note
+	defer udp_shutdown(&udp)
 	defer midi_shutdown(&midi)
 	defer delete(sus)
 	defer flush_notes(&midi, &sus) // runs first (LIFO): silence before shutdown
@@ -447,7 +454,7 @@ run_net_host :: proc(debug := false, want_room := "") {
 		if time.duration_seconds(time.tick_since(last)) >= frame {
 			last = time.tick_now()
 			advance_notes(&midi, &sus)
-			host_tick(&st, &midi, &sus)
+			host_tick(&st, &midi, &sus, &udp)
 		}
 		free_all(context.temp_allocator)
 		time.sleep(2 * time.Millisecond)

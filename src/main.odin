@@ -1,6 +1,6 @@
 // mallorca — native Odin port of Orca.
 // Grid display + editing + running simulation, with the VM's MIDI events
-// delivered via CoreMIDI (see midi.odin). OSC and UDP remain deferred.
+// delivered via CoreMIDI (see midi.odin), and UDP events sent to Pilot.
 package main
 
 
@@ -174,7 +174,7 @@ App :: struct {
 
 	// Simulation state.
 	marks:        []orca.Mark,
-	events:       [dynamic]orca.Event, // produced each tick, dispatched to MIDI
+	events:       [dynamic]orca.Event, // produced each tick, dispatched by the host
 	tick:         uint,
 	bpm:          int,
 	playing:      bool,
@@ -184,6 +184,7 @@ App :: struct {
 	// MIDI output (M5).
 	midi:         Midi,
 	sus:          [dynamic]Sus_Note, // notes awaiting their note-off
+	udp:          Udp_Output, // ';' events -> Pilot on localhost:49161
 
 	// P2P room (replaces the old Phoenix host/net link): peers stream full-grid
 	// snapshots directly over the mesh; `p2p.status` drives the connection
@@ -429,6 +430,7 @@ main :: proc() {
 	app.zoom = 1
 	app.dirty = true // preview marks for the freshly loaded grid
 	app.midi = midi_init(debug)
+	app.udp = udp_init(debug)
 
 	defer orca.destroy_grid(&app.grid)
 	defer delete(app.marks)
@@ -437,6 +439,7 @@ main :: proc() {
 	defer delete(app.clip_cells)
 	defer delete(app.sus)
 	defer clear_undo(&app)
+	defer udp_shutdown(&app.udp)
 	defer midi_shutdown(&app.midi)
 	defer if app.host_active {
 		host_shutdown(&app.host)
@@ -1267,7 +1270,7 @@ MAX_TICKS_PER_FRAME :: 8
 step_tick :: proc(app: ^App) {
 	orca.run_tick(app.grid, app.marks, app.tick, 0, &app.events)
 	advance_notes(&app.midi, &app.sus) // expire notes triggered on earlier ticks first
-	dispatch_events(&app.midi, &app.sus, app.events[:]) // then emit this tick's events
+	dispatch_events(&app.midi, &app.sus, &app.udp, app.events[:]) // then emit this tick's events
 	app.tick += 1
 	app.dirty = false
 }
@@ -1289,9 +1292,13 @@ advance_notes :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note) {
 	}
 }
 
-// Turn a tick's VM events into MIDI. OSC ('=') and UDP (';') are network
-// transports and remain deferred; the VM still produces them.
-dispatch_events :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note, events: []orca.Event) {
+// Deliver a tick's VM events. OSC ('=') remains deferred.
+dispatch_events :: proc(
+	midi: ^Midi,
+	sus: ^[dynamic]Sus_Note,
+	udp: ^Udp_Output,
+	events: []orca.Event,
+) {
 	for ev in events {
 		switch e in ev {
 		case orca.Midi_Note_Event:
@@ -1309,7 +1316,9 @@ dispatch_events :: proc(midi: ^Midi, sus: ^[dynamic]Sus_Note, events: []orca.Eve
 		case orca.Midi_PB_Event:
 			midi_pitch_bend(midi, e.channel, e.lsb, e.msb)
 		case orca.Osc_Ints_Event: // deferred
-		case orca.Udp_String_Event: // deferred
+		case orca.Udp_String_Event:
+			chars := e.chars
+			udp_send(udp, chars[:int(e.count)])
 		}
 	}
 }
@@ -1344,7 +1353,7 @@ update_sim :: proc(app: ^App) {
 			app.accum -= frame
 			step_tick(app) // our own grid (runs advance_notes once for all)
 			if app.host_active {
-				host_tick(&app.host, &app.midi, &app.sus) // remote players
+				host_tick(&app.host, &app.midi, &app.sus, &app.udp) // remote players
 				host_send_own(&app.host, app.grid, app.tick) // our grid -> /admin
 			}
 			if app.p2p_active {
