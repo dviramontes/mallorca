@@ -1,7 +1,6 @@
 // Events emitted by I/O operators; logical equivalents of orca-c's
 // Oevent (vmio.h), using a native tagged union rather than its C layout.
-// The VM only produces these; the host decides what to do with them
-// (delivery is a later milestone — until then they are discarded).
+// The VM only produces these; the host decides what to do with them.
 package core
 
 Event :: union {

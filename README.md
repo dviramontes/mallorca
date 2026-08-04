@@ -16,7 +16,8 @@ live-code together. See
 > limitation: support for other desktop platforms is planned, and a future
 > WebAssembly build that runs in the browser may also be explored. The
 > simulation sends its MIDI events out over CoreMIDI (note, control change, and
-> pitch bend); OSC and UDP events are still produced but not yet delivered.
+> pitch bend). UDP events are sent to Pilot on localhost:49161; OSC events are
+> still produced but not yet delivered.
 > Network mode assumes a LAN or trusted network, and only the host machine emits
 > MIDI.
 
